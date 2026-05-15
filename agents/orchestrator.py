@@ -327,9 +327,24 @@ class OrchestratorAgent(BaseAgent):
     def _resolve_run(self, run_id: Optional[str]) -> tuple[str, bool, str]:
         """Resolve the run to use — resume pending or create new."""
         if run_id:
-            topic_msg = self.state.get_latest_message(run_id, "TOPIC_SELECTED")
-            topic = topic_msg["payload"]["topic"] if topic_msg else ""
-            return run_id, True, topic
+            # Read topic directly from the DB — TOPIC_SELECTED message may not
+            # exist yet on brand-new runs, causing topic="" which bypasses the
+            # user-topic guard in TrendScoutAgent and triggers LLM discovery.
+            import sqlite3
+            import config as cfg
+            conn = sqlite3.connect(cfg.DB_PATH)
+            row = conn.execute(
+                "SELECT topic FROM pipeline_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            conn.close()
+            db_topic = (row[0] or "").strip() if row else ""
+
+            # Fallback: if DB topic is blank/TBD, check the blackboard message
+            if not db_topic or db_topic == "TBD":
+                topic_msg = self.state.get_latest_message(run_id, "TOPIC_SELECTED")
+                db_topic = topic_msg["payload"]["topic"] if topic_msg else db_topic
+
+            return run_id, True, db_topic
 
         pending = self.state.get_pending_run()
         if pending:
