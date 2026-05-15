@@ -40,3 +40,4 @@ AGENT_LOG_LEVEL = "INFO"     # structured agent logging level
 CRITIC_MIN_SCORE = 7         # overall score below which Critic requests revision (1-10)
 MAX_REVISION_CYCLES = 2      # max Narrator→Critic revision loops before forcing approval
 RESEARCH_MAX_RESULTS = 6     # DuckDuckGo results per search query
+MAX_TOOL_ROUNDS = 3          # max agentic tool-use loop iterations per LLM call

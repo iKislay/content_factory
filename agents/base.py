@@ -119,3 +119,61 @@ class BaseAgent(ABC):
         """Structured agent log line with timestamp."""
         ts = time.strftime("%H:%M:%S")
         print(f"[{ts}][{self.name.upper()}] {msg}")
+
+    # ── Tool tracing ──────────────────────────────────────────────────────────
+
+    def trace_tool_call(
+        self,
+        run_id: str,
+        call: Any,
+        result: Any,
+    ) -> None:
+        """
+        Post TOOL_CALLED and TOOL_RESULT messages to the blackboard.
+
+        Called automatically by ToolExecutor.trace_fn when agents use
+        make_executor(). Can also be called manually for lightweight tracing
+        in agents that don't use generate_with_tools().
+        """
+        self.post_message(
+            run_id=run_id,
+            msg_type="TOOL_CALLED",
+            payload={
+                "agent": self.name,
+                "tool_name": call.tool_name,
+                "arguments": call.arguments,
+                "call_id": call.call_id,
+            },
+        )
+        self.post_message(
+            run_id=run_id,
+            msg_type="TOOL_RESULT",
+            payload={
+                "agent": self.name,
+                "tool_name": result.tool_name,
+                "call_id": result.call_id,
+                "output_summary": result.to_summary(),
+                "error": result.error,
+                "duration_ms": result.duration_ms,
+            },
+        )
+
+    def make_executor(self, run_id: str) -> Any:
+        """
+        Create a ToolExecutor wired to this agent's blackboard trace function.
+
+        Usage::
+
+            executor = self.make_executor(run_id)
+            text, calls, results = generate_with_tools(
+                system, user, tools, executor
+            )
+        """
+        from tools.executor import ToolExecutor
+        from tools.registry import registry
+
+        def _trace(call: Any, result: Any) -> None:
+            self.trace_tool_call(run_id, call, result)
+
+        return ToolExecutor(registry=registry, trace_fn=_trace)
+

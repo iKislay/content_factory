@@ -1,53 +1,147 @@
 # agents/trend_scout.py
 """
-TrendScoutAgent — discovers the trending topic to build content around.
+TrendScoutAgent — discovers trending topics via LLM-driven tool use.
 
-Responsibilities:
-  - Query Google Trends via pytrends
-  - Apply fallback logic for rate-limited regions
-  - Reason about *why* this topic was chosen
-  - Post TOPIC_SELECTED to the blackboard with topic + rationale
+The LLM receives two tools: get_trending_topic and web_search.
+It calls get_trending_topic to find what's hot, then optionally uses web_search
+to validate the topic is genuinely interesting and video-worthy before committing.
+This is a lightweight but genuine example of the LLM driving tool selection.
+
+Blackboard messages consumed:
+  (none — first agent in pipeline)
 
 Blackboard messages produced:
-  TOPIC_SELECTED  { topic, rationale, region, source }
+  TOOL_CALLED      { agent, tool_name, arguments, call_id }  (one per call)
+  TOOL_RESULT      { agent, tool_name, call_id, output_summary, duration_ms }
+  TOPIC_SELECTED   { topic, rationale, source, region }
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict
 
+import config
 from agents.base import AgentResult, BaseAgent
-from modules.discovery import get_trending_topic, _try_pytrends, FALLBACK_TOPICS
-from state import PipelineState
+from providers.llm import generate_with_tools
+from modules.discovery import FALLBACK_TOPICS
+
+
+_SCOUT_SYSTEM = """You are a trend analyst for a viral short-form video channel.
+
+Your task: find the best topic to create a video about RIGHT NOW.
+
+Steps:
+1. Call get_trending_topic to see what's trending (try region="IN" first)
+2. Call web_search with the returned topic to verify it's interesting and has
+   good video potential (search for recent news or surprising facts about it)
+3. Based on what you find, decide: is this topic good for a short video?
+   If yes, return the topic. If it's too niche or boring, try get_trending_topic
+   with region="US" as a second option.
+
+When you have chosen your final topic, respond with ONLY this text:
+TOPIC: <the chosen topic>
+RATIONALE: <one sentence explaining why this topic will perform well>
+
+Do not include any other text."""
 
 
 class TrendScoutAgent(BaseAgent):
     """
-    Discovers trending topics and reasons about topic selection.
+    Discovers trending topics with LLM-driven tool use and topic validation.
 
-    This agent wraps the existing discovery module and adds an explicit
-    reasoning layer — it records *why* a topic was chosen (trending in
-    a region vs. fallback selection), which is posted to the blackboard
-    for downstream agents to use as context.
+    The LLM calls get_trending_topic, validates the result via web_search,
+    and returns a chosen topic with rationale — rather than blindly accepting
+    the first trend returned.
     """
 
     name = "trend_scout"
 
     def run(self, run_id: str, context: Dict[str, Any]) -> AgentResult:
-        self.log("Starting topic discovery...")
+        # Resume path — topic already selected in a previous run
+        if context.get("topic") and context["topic"] != "TBD":
+            topic = context["topic"]
+            self.log(f"Resuming with existing topic: '{topic}'")
+            self._post_selected(run_id, topic, "Resumed from previous run.", "resumed")
+            return AgentResult(
+                success=True,
+                output={"topic": topic, "rationale": "Resumed from previous run."},
+                next_agent="research",
+                reasoning=f"Resumed: topic='{topic}'",
+            )
 
-        topic = context.get("topic")  # passed if resuming a crashed run
-        source = "resumed"
-        region = "N/A"
-        rationale = "Resuming from persisted state — topic already selected."
+        self.log("Starting LLM-driven topic discovery...")
+
+        from tools import registry
+
+        available_tools = [
+            registry.get("get_trending_topic"),
+            registry.get("web_search"),
+        ]
+
+        executor = self.make_executor(run_id)
+
+        try:
+            final_text, all_calls, all_results = generate_with_tools(
+                system_prompt=_SCOUT_SYSTEM,
+                user_prompt="Find the best topic for a viral short video right now.",
+                tools=available_tools,
+                executor=executor,
+                max_rounds=config.MAX_TOOL_ROUNDS,
+            )
+            topic, rationale = self._parse_response(final_text)
+        except Exception as e:
+            self.log(f"Tool-use failed: {e} — using fallback discovery")
+            topic, rationale = self._fallback_topic()
+
+        source = "tool_use" if all_calls else "fallback"
+        self.log(f"Topic: '{topic}' ({source})")
+        self.log(
+            f"Tool calls: {len(all_calls)} "
+            f"({[c.tool_name for c in all_calls]})"
+        )
+
+        self._post_selected(run_id, topic, rationale, source)
+
+        return AgentResult(
+            success=True,
+            output={"topic": topic, "rationale": rationale},
+            next_agent="research",
+            reasoning=f"Selected '{topic}' via {source}. {rationale}",
+        )
+
+    # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _parse_response(self, text: str) -> tuple[str, str]:
+        """Extract TOPIC and RATIONALE from the LLM's final response."""
+        topic = ""
+        rationale = ""
+
+        for line in text.splitlines():
+            line = line.strip()
+            if line.upper().startswith("TOPIC:"):
+                topic = line.split(":", 1)[1].strip()
+            elif line.upper().startswith("RATIONALE:"):
+                rationale = line.split(":", 1)[1].strip()
 
         if not topic:
-            topic, source, region = self._discover_topic()
-            rationale = self._build_rationale(topic, source, region)
+            # Fallback: use the whole response as a topic if short
+            topic = text.strip().split("\n")[0][:100]
+            rationale = "Selected from LLM response."
 
-        self.log(f"Topic selected: '{topic}' via {source} ({region})")
-        self.log(f"Reasoning: {rationale}")
+        return topic, rationale
 
+    def _fallback_topic(self) -> tuple[str, str]:
+        """Return a curated fallback topic when tool-use fails."""
+        import time
+        idx = int(time.time()) % len(FALLBACK_TOPICS)
+        topic = FALLBACK_TOPICS[idx]
+        return topic, f"Tool-use unavailable; selected '{topic}' from curated list."
+
+    def _post_selected(
+        self, run_id: str, topic: str, rationale: str, source: str
+    ) -> None:
+        """Post TOPIC_SELECTED to the blackboard."""
         self.post_message(
             run_id=run_id,
             msg_type="TOPIC_SELECTED",
@@ -55,48 +149,7 @@ class TrendScoutAgent(BaseAgent):
                 "topic": topic,
                 "rationale": rationale,
                 "source": source,
-                "region": region,
+                "region": "IN",
             },
-            recipient="narrator",
-        )
-
-        return AgentResult(
-            success=True,
-            output={"topic": topic, "rationale": rationale},
-            next_agent="narrator",
-            reasoning=rationale,
-        )
-
-    # ── Internal helpers ──────────────────────────────────────────────────────
-
-    def _discover_topic(self) -> tuple[str, str, str]:
-        """
-        Try Google Trends across regions, return (topic, source, region).
-        Falls back to a curated list if Trends is unavailable.
-        """
-        for region in ["IN", "US", "GB"]:
-            self.log(f"Querying Google Trends [{region}]...")
-            topic = _try_pytrends(region)
-            if topic:
-                return topic, "google_trends", region
-
-        # Intelligent fallback — pick based on current hour to add variety
-        import time
-        idx = int(time.time()) % len(FALLBACK_TOPICS)
-        topic = FALLBACK_TOPICS[idx]
-        self.log(f"Trends unavailable — using curated fallback: '{topic}'")
-        return topic, "curated_fallback", "N/A"
-
-    def _build_rationale(self, topic: str, source: str, region: str) -> str:
-        """Construct a human-readable rationale for topic selection."""
-        if source == "google_trends":
-            return (
-                f"'{topic}' is currently trending in the {region} region on "
-                f"Google Trends. Selected as the highest-interest topic in the "
-                f"past hour — high search velocity indicates strong audience demand."
-            )
-        return (
-            f"Google Trends was rate-limited or unavailable. Selected '{topic}' "
-            f"from a curated list of high-value tech topics with consistent "
-            f"audience interest."
+            recipient="research",
         )
