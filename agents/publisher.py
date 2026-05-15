@@ -47,7 +47,7 @@ class PublisherAgent(BaseAgent):
         self.log("Starting video compilation and publishing...")
 
         # ── Load assets from blackboard ────────────────────────────────────────
-        production_msg = self.get_latest(run_id, "PRODUCTION_DONE")
+        production_msg = self.get_latest(run_id, "PRODUCTION_SUMMARY")
         # Prefer NARRATIVE_APPROVED (post-Critic); fall back for legacy runs
         narrative_msg = (
             self.get_latest(run_id, "NARRATIVE_APPROVED")
@@ -58,7 +58,7 @@ class PublisherAgent(BaseAgent):
         if not production_msg:
             return AgentResult(
                 success=False,
-                reasoning="PRODUCTION_DONE message missing from blackboard.",
+                reasoning="PRODUCTION_SUMMARY message missing from blackboard.",
                 errors=["No production assets found"],
             )
 

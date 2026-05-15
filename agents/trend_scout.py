@@ -62,26 +62,13 @@ class TrendScoutAgent(BaseAgent):
     def run(self, run_id: str, context: Dict[str, Any]) -> AgentResult:
         user_provided_topic = context.get("topic")
         
-        # If user provided a meaningful topic (not empty, not TBD, not auto-discover), use it directly
         auto_keywords = ['auto-discover', 'find topic', 'discover', 'trending', 'generate topic']
         is_auto_topic = user_provided_topic and any(kw in user_provided_topic.lower() for kw in auto_keywords)
         
+        base_topic = None
         if user_provided_topic and user_provided_topic.strip() and user_provided_topic != "TBD" and not is_auto_topic:
-            topic = user_provided_topic.strip()
-            self.log(f"Using user-provided topic: '{topic}'")
-            self._post_selected(
-                run_id,
-                topic,
-                "User provided topic.",
-                "user_provided",
-                "IN",
-            )
-            return AgentResult(
-                success=True,
-                output={"topic": topic, "rationale": "User provided topic."},
-                next_agent="research",
-                reasoning=f"User topic: '{topic}'",
-            )
+            base_topic = user_provided_topic.strip()
+            self.log(f"User provided base topic: '{base_topic}' — finding related angles...")
 
         # Resume path — topic already selected in a previous run
         if context.get("topic") and context["topic"] != "TBD":
@@ -117,9 +104,14 @@ class TrendScoutAgent(BaseAgent):
         executor = self.make_executor(run_id)
 
         try:
+            if base_topic:
+                user_prompt = f"Find the top 3 best angles or sub-topics for a viral short video about: '{base_topic}' right now."
+            else:
+                user_prompt = "Find the top 3 best topics for a viral short video right now."
+            
             final_text, all_calls, all_results = generate_with_tools(
                 system_prompt=_SCOUT_SYSTEM,
-                user_prompt="Find the top 3 best topics for a viral short video right now.",
+                user_prompt=user_prompt,
                 tools=available_tools,
                 executor=executor,
                 max_rounds=config.MAX_TOOL_ROUNDS,

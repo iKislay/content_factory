@@ -38,7 +38,7 @@ _SCENE_WRITE_SYSTEM = """You are a master storyteller creating engaging short-fo
 
 Return ONLY a raw JSON array — no markdown, no backticks, no preamble whatsoever.
 
-Generate exactly 5 scenes with this exact schema:
+Generate between 5 and 12 scenes with this exact schema:
 {
   "scene_id": int,
   "visual_prompt": str,
@@ -51,7 +51,7 @@ Rules:
   "pause for a second", "here's the real truth", "let me save you hours",
   "this may surprise you", "I just figured this out"
 - All narrations are SHORT: 1-2 sentences max, punchy, first-person
-- Total narration across all 5 scenes should be ~30 seconds when spoken (60-90 words)
+- Total narration across all scenes should be ~30-60 seconds when spoken (60-150 words)
 - visual_prompt: 2-4 word concrete image description, then append:
   ", premium minimalist aesthetic, clean composition, 9:16 vertical frame,
   soft bokeh background, teal-and-orange color grade, photorealistic, 4K"
@@ -128,7 +128,7 @@ class NarratorAgent(BaseAgent):
             )
             scenes2 = self._write_scenes(stronger_prompt)
             grounding2 = check_grounding(scenes2, facts, stats)
-            if grounding2.is_grounded or len(scenes2) == 5:
+            if grounding2.is_grounded or (5 <= len(scenes2) <= 12):
                 scenes = scenes2
                 grounding = grounding2
                 self.log(f"Grounding after retry: {grounding}")
@@ -248,7 +248,7 @@ class NarratorAgent(BaseAgent):
             try:
                 raw = generate(_SCENE_WRITE_SYSTEM, user_prompt)
                 scenes = _parse_scenes(raw)
-                if len(scenes) == 5:
+                if 5 <= len(scenes) <= 12:
                     return scenes
                 errors.append(f"Attempt {attempt}: got {len(scenes)} scenes")
                 self.log(f"  Parse attempt {attempt} got {len(scenes)} scenes — retrying")

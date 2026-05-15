@@ -14,6 +14,8 @@ def generate_image(prompt: str, scene_id: int, output_dir: str) -> str:
         raise ValueError(f"Unknown image provider: {config.IMAGE_PROVIDER}")
 
 
+import random
+
 def _pollinations_generate(prompt: str, scene_id: int, output_dir: str, max_retries: int = 5) -> str:
     """Generate image using Pollinations.ai."""
     os.makedirs(output_dir, exist_ok=True)
@@ -29,7 +31,7 @@ def _pollinations_generate(prompt: str, scene_id: int, output_dir: str, max_retr
                 "width": config.IMAGE_WIDTH,
                 "height": config.IMAGE_HEIGHT,
                 "nologo": True,
-                "seed": scene_id
+                "seed": random.randint(1, 1000000)
             }
             response = requests.post(url, json=payload, timeout=60)
 
