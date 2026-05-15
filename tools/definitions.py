@@ -384,3 +384,42 @@ def fetch_rss_feed(feed_ids: str, max_items_per_feed: int = 5) -> List[Dict[str,
     items = get_all_feeds_items(feed_id_list, max_items_per_feed=max_items_per_feed)
     return [item.to_dict() for item in items]
 
+
+# ─── 9. fetch_platform_trends ────────────────────────────────────────────────────
+
+
+@registry.tool(
+    name="fetch_platform_trends",
+    description=(
+        "Fetch trending posts from a specific platform (Twitter/X or LinkedIn) "
+        "for a given topic. Uses RSS.app to create a dynamic feed and analyze "
+        "viral patterns. Returns top-performing posts and their structural DNA "
+        "(hook type, formatting style, sentiment)."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "platform": {
+                "type": "string",
+                "description": "Platform to search: 'twitter' or 'linkedin'.",
+                "enum": ["twitter", "linkedin"],
+            },
+            "topic": {
+                "type": "string",
+                "description": "Topic to search for (e.g., 'AI trends 2026').",
+            },
+            "max_items": {
+                "type": "integer",
+                "description": "Maximum number of posts to fetch (default: 10).",
+                "default": 10,
+            },
+        },
+        "required": ["platform", "topic"],
+    },
+)
+def fetch_platform_trends(platform: str, topic: str, max_items: int = 10) -> Dict[str, Any]:
+    """Fetch trending posts from a platform and analyze viral patterns."""
+    from providers.rss_app import fetch_platform_trends as _fetch_trends
+
+    return _fetch_trends(platform=platform, topic=topic, max_items=max_items)
+
