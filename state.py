@@ -154,14 +154,15 @@ class PipelineState:
         conn.close()
 
     def get_audio_map(self, run_id: str) -> dict:
-        """Retrieve saved audio map."""
+        """Retrieve saved audio map, with keys normalized to integers."""
         conn = sqlite3.connect(config.DB_PATH)
         cursor = conn.cursor()
         cursor.execute("SELECT audio_map_json FROM pipeline_runs WHERE run_id = ?", (run_id,))
         row = cursor.fetchone()
         conn.close()
         if row and row[0]:
-            return json.loads(row[0])
+            loaded = json.loads(row[0])
+            return {int(k): v for k, v in loaded.items()}
         return {}
 
     def save_video_paths(self, run_id: str, paths: list) -> None:
