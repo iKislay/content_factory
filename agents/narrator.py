@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional
 from agents.base import AgentResult, BaseAgent
 from modules.narrator import _parse_scenes
 from providers.llm import generate
+from providers.fact_grounding import check_grounding, select_mandatory_fact
 
 
 _SCENE_WRITE_SYSTEM = """You are a master storyteller creating engaging short-form video content.
@@ -108,6 +109,30 @@ class NarratorAgent(BaseAgent):
         user_prompt = self._build_prompt(topic, brief, research, revision_feedback)
         scenes = self._write_scenes(user_prompt)
 
+        # ── Grounding check ───────────────────────────────────────────────────
+        facts = research.get("facts") or brief.get("research_facts", [])
+        stats = research.get("stats") or brief.get("research_stats", [])
+        grounding = check_grounding(scenes, facts, stats)
+        self.log(str(grounding))
+
+        # If first draft has zero grounding, try once more with a stronger directive
+        if not grounding.is_grounded and not is_revision:
+            self.log(
+                "No research facts grounded in first draft — "
+                "retrying with stronger grounding directive..."
+            )
+            stronger_prompt = self._build_prompt(
+                topic, brief, research, revision_feedback,
+                force_grounding=True,
+                mandatory_fact=grounding.mandatory_fact,
+            )
+            scenes2 = self._write_scenes(stronger_prompt)
+            grounding2 = check_grounding(scenes2, facts, stats)
+            if grounding2.is_grounded or len(scenes2) == 5:
+                scenes = scenes2
+                grounding = grounding2
+                self.log(f"Grounding after retry: {grounding}")
+
         for s in scenes:
             self.log(
                 f"  Scene {s['scene_id']} [{s['motion_directive']}]: "
@@ -117,7 +142,12 @@ class NarratorAgent(BaseAgent):
         self.post_message(
             run_id=run_id,
             msg_type="NARRATIVE_DRAFT",
-            payload={"scenes": scenes, "topic": topic, "attempt": revision_count},
+            payload={
+                "scenes": scenes,
+                "topic": topic,
+                "attempt": revision_count,
+                "grounding": grounding.to_dict(),
+            },
             recipient="critic",
         )
 
@@ -127,6 +157,8 @@ class NarratorAgent(BaseAgent):
             next_agent="critic",
             reasoning=(
                 f"Wrote {len(scenes)} scenes (attempt {revision_count}). "
+                f"Grounding: {grounding.grounding_score:.2f} "
+                f"({len(grounding.grounded_facts)} facts referenced). "
                 f"Grounded in {'ContentBrief + research' if brief else 'topic only'}."
             ),
         )
@@ -139,6 +171,8 @@ class NarratorAgent(BaseAgent):
         brief: Dict[str, Any],
         research: Dict[str, Any],
         revision_feedback: str,
+        force_grounding: bool = False,
+        mandatory_fact: str = "",
     ) -> str:
         """Construct a rich, grounded scene-writing prompt."""
         parts = [f"Write 5 scenes for a short video about: {topic}\n"]
@@ -160,7 +194,7 @@ class NarratorAgent(BaseAgent):
         stats = research.get("stats") or brief.get("research_stats", [])
         if facts:
             parts.append(
-                "Ground your narration in these real facts:\n"
+                "Ground your narration in these REAL, LIVE-RESEARCHED facts:\n"
                 + "\n".join(f"  • {f}" for f in facts[:4])
             )
         if stats:
@@ -169,9 +203,34 @@ class NarratorAgent(BaseAgent):
                 + "\n".join(f"  • {s}" for s in stats[:2])
             )
 
+        # News headline injection (Task 4)
+        news_headline = research.get("news_headline", "")
+        if news_headline:
+            parts.append(
+                f"Recent development (reference this if relevant): {news_headline}"
+            )
+
         if research.get("key_insight") or brief.get("key_insight"):
             insight = research.get("key_insight") or brief.get("key_insight")
             parts.append(f"Key insight to convey: {insight}")
+
+        # Mandatory fact grounding directive (Task 4)
+        effective_mandatory = mandatory_fact or select_mandatory_fact(facts, stats)
+        if effective_mandatory:
+            directive = (
+                "\n⚠ MANDATORY REQUIREMENT: You MUST incorporate this specific "
+                "statistic or fact (verbatim or closely paraphrased) somewhere "
+                "in your narration. This proves your content is research-grounded:\n"
+                f'  "{effective_mandatory}"'
+            )
+            if force_grounding:
+                directive = (
+                    "\n⚠⚠ CRITICAL: The previous draft failed to reference any "
+                    "researched facts. You MUST include this specific fact in the "
+                    "narration of at least one scene — it cannot be omitted:\n"
+                    f'  "{effective_mandatory}"'
+                )
+            parts.append(directive)
 
         if revision_feedback:
             parts.append(

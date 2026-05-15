@@ -7,9 +7,15 @@ Critic evaluates them against the ContentBrief and the ResearchBrief using a
 formal 5-dimension scoring rubric, then makes a binary decision: APPROVE or
 REVISE.
 
+Task 4 addition: the Critic reads the grounding metadata from NARRATIVE_DRAFT
+and hard-caps factual_score at 4 when is_grounded==False (no researched facts
+appear in the narration). This prevents ungrounded content from achieving a
+high overall score and forces a revision that references live research.
+
 Scoring rubric (each dimension 1-10):
   hook_score:      Scene 1 must start with one of the mandated hook openers.
   factual_score:   Claims should be grounded in research facts, not generic.
+                   Hard-capped at 4 when grounding.is_grounded == False.
   pacing_score:    Estimated total runtime 25-40 seconds (based on word count).
   coherence_score: All scenes serve the chosen_angle and follow the emotional arc.
   viral_score:     At least one genuinely surprising, share-worthy claim.
@@ -20,7 +26,7 @@ Decision rules:
   revision_count >= MAX_REVISION_CYCLES → force APPROVE (demo reliability > perfection)
 
 Blackboard messages consumed:
-  NARRATIVE_DRAFT  { scenes, attempt }
+  NARRATIVE_DRAFT  { scenes, attempt, grounding }
   CONTENT_BRIEF    { chosen_angle, emotional_arc, visual_motif }
   RESEARCH_COMPLETE { facts, stats }
 
@@ -79,6 +85,7 @@ def _build_critic_prompt(
     scenes: List[Dict],
     brief: Dict[str, Any],
     research: Dict[str, Any],
+    grounding: Dict[str, Any] = None,
 ) -> str:
     """Construct the user prompt for the critic LLM call."""
     scenes_text = json.dumps(scenes, indent=2)
@@ -89,15 +96,36 @@ def _build_critic_prompt(
     facts_text = "\n".join(f"  • {f}" for f in research.get("facts", []))
     stats_text = "\n".join(f"  • {s}" for s in research.get("stats", []))
 
+    # Grounding analysis section (Task 4)
+    grounding_section = ""
+    if grounding:
+        grounded = grounding.get("grounded_facts", [])
+        score = grounding.get("grounding_score", 0.0)
+        is_grounded = grounding.get("is_grounded", False)
+        grounding_section = (
+            f"\n=== FACT GROUNDING ANALYSIS ===\n"
+            f"Research facts referenced in narration: {len(grounded)}\n"
+            f"Grounding score: {score:.2f} (0=none, 1=all facts referenced)\n"
+            f"Is grounded: {is_grounded}\n"
+            + (
+                "Grounded facts:\n"
+                + "\n".join(f"  ✓ {f}" for f in grounded[:3])
+                if grounded
+                else "  ✗ No researched facts found in narration text."
+            )
+        )
+
     return (
         f"=== CONTENT BRIEF ===\n"
         f"Chosen angle: {brief.get('chosen_angle', 'N/A')}\n"
         f"Visual motif: {brief.get('visual_motif', 'N/A')}\n"
         f"Emotional arc:\n{arc_text}\n\n"
         f"=== RESEARCH FACTS ===\n{facts_text}\n\n"
-        f"=== RESEARCH STATS ===\n{stats_text}\n\n"
+        f"=== RESEARCH STATS ===\n{stats_text}\n"
+        f"{grounding_section}\n\n"
         f"=== NARRATIVE DRAFT ===\n{scenes_text}"
     )
+
 
 
 class CriticAgent(BaseAgent):
@@ -135,8 +163,35 @@ class CriticAgent(BaseAgent):
         brief: Dict = brief_msg["payload"] if brief_msg else {}
         research: Dict = research_msg["payload"] if research_msg else {}
 
+        # Read grounding metadata attached by NarratorAgent (Task 4)
+        grounding: Dict = draft_msg["payload"].get("grounding", {})
+        is_grounded: bool = grounding.get("is_grounded", True)  # default True = don't penalise legacy runs
+        grounded_facts: List = grounding.get("grounded_facts", [])
+        grounding_score: float = grounding.get("grounding_score", 1.0)
+
         # ── LLM evaluation ────────────────────────────────────────────────────
-        scores = self._evaluate(scenes, brief, research)
+        scores = self._evaluate(scenes, brief, research, grounding)
+
+        # ── Hard-cap factual_score when no research facts are grounded (Task 4) ──
+        if not is_grounded and scores.get("factual_score", 10) > 4:
+            self.log(
+                f"factual_score capped: is_grounded=False "
+                f"(was {scores['factual_score']}, capped at 4)"
+            )
+            scores["factual_score"] = 4
+            dim_keys = ["hook_score", "factual_score", "pacing_score",
+                        "coherence_score", "viral_score"]
+            scores["overall"] = max(
+                1, min(10, round(sum(scores[k] for k in dim_keys) / len(dim_keys)))
+            )
+            if scores["overall"] < config.CRITIC_MIN_SCORE:
+                scores["decision"] = "REVISE"
+                if not scores.get("feedback"):
+                    scores["feedback"] = (
+                        "The narration does not reference any specific researched facts. "
+                        "Revise to include at least one concrete statistic or fact from "
+                        "the research brief (specific numbers, dates, or named findings)."
+                    )
 
         overall = scores.get("overall", 0)
         decision = scores.get("decision", "APPROVE")
@@ -221,10 +276,11 @@ class CriticAgent(BaseAgent):
         scenes: List[Dict],
         brief: Dict[str, Any],
         research: Dict[str, Any],
+        grounding: Dict[str, Any] = None,
     ) -> Dict[str, Any]:
         """Call the LLM critic and parse the evaluation JSON."""
         system = _CRITIC_SYSTEM.format(min_score=config.CRITIC_MIN_SCORE)
-        user = _build_critic_prompt(scenes, brief, research)
+        user = _build_critic_prompt(scenes, brief, research, grounding or {})
 
         try:
             raw = generate(system, user)

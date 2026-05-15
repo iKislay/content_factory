@@ -3,14 +3,16 @@
 Concrete tool implementations registered on the global registry.
 
 Import this module to trigger all @registry.tool() decorations.
-All five tools are usable via generate_with_tools() or directly.
+All seven tools are usable via generate_with_tools() or directly.
 
 Tools registered here:
-  1. web_search        — DuckDuckGo query → list of {title, snippet, url}
-  2. fetch_url         — HTTP GET → plain-text page content (HTML stripped)
+  1. web_search         — DuckDuckGo query → list of {title, snippet, url}
+  2. fetch_url          — HTTP GET → plain-text page content (HTML stripped)
   3. get_trending_topic — Google Trends (with fallback) → topic string
-  4. generate_image    — Pollinations.ai → local file path
-  5. synthesize_tts    — Kokoro TTS → {path, duration} dict
+  4. generate_image     — Pollinations.ai → local file path
+  5. synthesize_tts     — Kokoro TTS → {path, duration} dict
+  6. search_wikipedia   — Wikipedia REST API → structured summary + key facts
+  7. search_news        — DuckDuckGo News → recent articles with dates
 """
 
 from __future__ import annotations
@@ -229,3 +231,69 @@ def synthesize_tts(text: str, scene_id: int, output_dir: str) -> Dict[str, Any]:
 
     duration = round(len(audio) / config.KOKORO_SAMPLE_RATE, 3)
     return {"path": output_path, "duration": duration}
+
+
+# ─── 6. search_wikipedia ──────────────────────────────────────────────────────
+
+
+@registry.tool(
+    name="search_wikipedia",
+    description=(
+        "Fetch a structured Wikipedia summary for a topic. Returns the article "
+        "title, a plain-text extract (encyclopedic background), key fact-dense "
+        "sentences, and the article URL. Use this FIRST to establish authoritative "
+        "background before searching for statistics or news."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "topic": {
+                "type": "string",
+                "description": "Topic to look up on Wikipedia (e.g. 'quantum computing').",
+            },
+        },
+        "required": ["topic"],
+    },
+)
+def search_wikipedia(topic: str) -> Dict[str, Any]:
+    """Fetch a Wikipedia summary and return it as a serialisable dict."""
+    from providers.wikipedia import get_wikipedia_summary
+
+    result = get_wikipedia_summary(topic)
+    return result.to_dict()
+
+
+# ─── 7. search_news ───────────────────────────────────────────────────────────
+
+
+@registry.tool(
+    name="search_news",
+    description=(
+        "Search for recent news articles about a topic using DuckDuckGo News. "
+        "Returns articles with title, body excerpt, source name, publication date, "
+        "and URL. Use this to find what's happening RIGHT NOW — complements "
+        "Wikipedia's encyclopedic background with current events."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "topic": {
+                "type": "string",
+                "description": "Topic to search news for.",
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Maximum number of articles to return (default: 5).",
+                "default": 5,
+            },
+        },
+        "required": ["topic"],
+    },
+)
+def search_news(topic: str, max_results: int = 5) -> List[Dict[str, Any]]:
+    """Search DuckDuckGo News and return serialisable article dicts."""
+    from providers.news import search_news as _search
+
+    articles = _search(topic, max_results=max_results)
+    return [a.to_dict() for a in articles]
+
