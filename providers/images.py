@@ -14,29 +14,40 @@ def generate_image(prompt: str, scene_id: int, output_dir: str) -> str:
         raise ValueError(f"Unknown image provider: {config.IMAGE_PROVIDER}")
 
 
-def _pollinations_generate(prompt: str, scene_id: int, output_dir: str, max_retries: int = 3) -> str:
+def _pollinations_generate(prompt: str, scene_id: int, output_dir: str, max_retries: int = 5) -> str:
     """Generate image using Pollinations.ai."""
     os.makedirs(output_dir, exist_ok=True)
-
-    encoded_prompt = quote(prompt)
-    url = f"{config.POLLINATIONS_BASE}/{encoded_prompt}?width={config.IMAGE_WIDTH}&height={config.IMAGE_HEIGHT}&nologo=true&seed={scene_id}"
+    filename = f"image_scene_{scene_id}.jpg"
+    filepath = os.path.join(output_dir, filename)
 
     for attempt in range(max_retries):
         try:
-            response = requests.get(url, timeout=30)
+            # Use POST endpoint for better handling of long prompts
+            url = f"https://image.pollinations.ai/prompt"
+            payload = {
+                "prompt": prompt,
+                "width": config.IMAGE_WIDTH,
+                "height": config.IMAGE_HEIGHT,
+                "nologo": True,
+                "seed": scene_id
+            }
+            response = requests.post(url, json=payload, timeout=60)
+
             if response.status_code == 200:
-                filename = f"image_scene_{scene_id}.jpg"
-                filepath = os.path.join(output_dir, filename)
                 with open(filepath, "wb") as f:
                     f.write(response.content)
                 print(f"[IMG] Generated scene {scene_id} via pollinations")
                 return filepath
             else:
                 print(f"[IMG] Attempt {attempt + 1} failed with status {response.status_code}")
+        except requests.exceptions.Timeout:
+            print(f"[IMG] Attempt {attempt + 1} timed out")
         except Exception as e:
             print(f"[IMG] Attempt {attempt + 1} failed: {e}")
 
         if attempt < max_retries - 1:
-            time.sleep(2)
+            wait_time = (attempt + 1) * 3
+            print(f"[IMG] Waiting {wait_time}s before retry...")
+            time.sleep(wait_time)
 
     raise RuntimeError(f"Failed to generate image after {max_retries} attempts")
