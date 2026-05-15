@@ -63,6 +63,15 @@ export const api = {
     } catch (e) { console.error(e); return null; }
   },
 
+  async getPersonas(): Promise<{id: string; name: string; description: string}[]> {
+    try {
+      const res = await fetch(`${API_BASE}/personas`);
+      if (!res.ok) throw new Error('Failed to fetch personas');
+      const data = await res.json();
+      return data.personas;
+    } catch (e) { console.error(e); return []; }
+  },
+
   async getRunMessages(runId: string): Promise<AgentMessage[]> {
     try {
       const res = await fetch(`${API_BASE}/runs/${runId}/messages`);
@@ -80,12 +89,12 @@ export const api = {
     } catch (e) { console.error(e); return { total_runs: 0, completed_runs: 0, success_rate: 0 }; }
   },
 
-  async startRun(topic: string, autoApprove: boolean = false): Promise<{run_id: string} | null> {
+  async startRun(topic: string, autoApprove: boolean = false, persona: string = "The Analyst"): Promise<{run_id: string} | null> {
     try {
       const res = await fetch(`${API_BASE}/runs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ topic, auto_approve: autoApprove }),
+        body: JSON.stringify({ topic, auto_approve: autoApprove, persona }),
       });
       if (!res.ok) throw new Error('Failed to start run');
       return await res.json();

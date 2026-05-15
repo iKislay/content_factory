@@ -377,12 +377,35 @@ function ActiveRunView({
       </div>
 
       {/* Human in the loop */}
-      {isWaitingForUser && (
+      {isWaitingForUser && run.status === 'TOPIC_AWAITING_APPROVAL' && (
         <HumanInTheLoop
           topics={topics}
           rationale={rationale}
           onApprove={onApprove}
           onReject={onReject}
+        />
+      )}
+
+      {/* Script Review */}
+      {isWaitingForUser && run.status === 'SCRIPT_AWAITING_APPROVAL' && scriptScenes && (
+        <ScriptReview
+          scenes={scriptScenes}
+          onApprove={(editedScenes) => {
+            api.updateScenes(run.run_id, editedScenes || []);
+            onApprove('', false);
+          }}
+          onReject={onReject}
+        />
+      )}
+
+      {/* Visual Style Selector */}
+      {isWaitingForUser && run.status === 'STYLE_AWAITING_APPROVAL' && visualStyles && (
+        <VisualStyleSelector
+          styles={visualStyles}
+          onApprove={(style) => {
+            api.setVisualStyle(run.run_id, style);
+            onApprove('', false);
+          }}
         />
       )}
 
@@ -531,6 +554,8 @@ function RunDetailView({ runId, onBack }: { runId: string; onBack: () => void })
         isWaitingForUser={isWaiting}
         topics={topics}
         rationale={topicRationale}
+        scriptScenes={scriptScenes}
+        visualStyles={visualStyles}
         onApprove={handleApprove}
         onReject={handleReject}
         onCancel={handleCancel}
@@ -545,12 +570,23 @@ function RunDetailView({ runId, onBack }: { runId: string; onBack: () => void })
 function GeneratorView({ onStartRun }: { onStartRun: (id: string) => void }) {
   const [mode, setMode] = useState<'selection' | 'text' | 'video'>('selection');
   const [topic, setTopic] = useState('');
+  const [persona, setPersona] = useState('The Storyteller');
+  const [personas, setPersonas] = useState<{id: string; name: string; description: string}[]>([]);
   const [autoApprove, setAutoApprove] = useState(false);
   const [loading, setLoading] = useState(false);
 
+  useEffect(() => {
+    api.getPersonas().then(data => {
+      if (data && data.length > 0) {
+        setPersonas(data);
+        setPersona(data[0].id);
+      }
+    });
+  }, []);
+
   const startVideoRun = async () => {
     setLoading(true);
-    const run = await api.startRun(topic.trim() || 'Auto-discover trending topic', autoApprove);
+    const run = await api.startRun(topic.trim() || 'Auto-discover trending topic', autoApprove, persona);
     setLoading(false);
     if (run) onStartRun(run.run_id);
   };
@@ -643,6 +679,35 @@ function GeneratorView({ onStartRun }: { onStartRun: (id: string) => void }) {
             value={topic}
             onChange={e => setTopic(e.target.value)}
           />
+        </div>
+
+        <div style={{ marginBottom: 'var(--spacing-lg)' }}>
+          <label className="title-sm" style={{ display: 'block', marginBottom: 'var(--spacing-xs)' }}>Creator Persona</label>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
+            {personas.map(p => (
+              <div 
+                key={p.id} 
+                onClick={() => setPersona(p.id)}
+                className="card"
+                style={{ 
+                  cursor: 'pointer', 
+                  border: persona === p.id ? '2px solid var(--primary)' : '1px solid var(--hairline)',
+                  backgroundColor: persona === p.id ? 'rgba(var(--primary-rgb), 0.05)' : 'var(--surface)',
+                  padding: '12px'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                  <div style={{ width: 14, height: 14, borderRadius: '50%', border: '1px solid var(--muted)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {persona === p.id && <div style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: 'var(--primary)' }} />}
+                  </div>
+                  <h3 className="title-sm" style={{ margin: 0 }}>{p.name}</h3>
+                </div>
+                <p className="caption" style={{ color: 'var(--muted)', margin: 0, paddingLeft: 22 }}>
+                  {p.description}
+                </p>
+              </div>
+            ))}
+          </div>
         </div>
 
         <label className="toggle-row" style={{ marginBottom: 'var(--spacing-lg)' }}>
@@ -803,6 +868,8 @@ export default function App() {
             isWaitingForUser={isWaiting}
             topics={topics}
             rationale={topicRationale}
+            scriptScenes={scriptScenes}
+            visualStyles={visualStyles}
             onApprove={handleApprove}
             onReject={handleReject}
             onCancel={handleCancel}

@@ -105,9 +105,14 @@ class NarratorAgent(BaseAgent):
         if is_revision:
             self.log(f"Revision feedback: {revision_feedback[:120]}")
 
+        from modules.personas import get_persona
+        persona_name = context.get("persona", "The Analyst")
+        persona_data = get_persona(persona_name)
+        persona_inst = persona_data.get("narrator_instruction", "")
+
         # ── Build prompt and write scenes ─────────────────────────────────────
         user_prompt = self._build_prompt(topic, brief, research, revision_feedback)
-        scenes = self._write_scenes(user_prompt)
+        scenes = self._write_scenes(user_prompt, persona_inst)
 
         # ── Grounding check ───────────────────────────────────────────────────
         facts = research.get("facts") or brief.get("research_facts", [])
@@ -126,7 +131,7 @@ class NarratorAgent(BaseAgent):
                 force_grounding=True,
                 mandatory_fact=grounding.mandatory_fact,
             )
-            scenes2 = self._write_scenes(stronger_prompt)
+            scenes2 = self._write_scenes(stronger_prompt, persona_inst)
             grounding2 = check_grounding(scenes2, facts, stats)
             if grounding2.is_grounded or (5 <= len(scenes2) <= 12):
                 scenes = scenes2
@@ -240,13 +245,14 @@ class NarratorAgent(BaseAgent):
 
         return "\n\n".join(parts)
 
-    def _write_scenes(self, user_prompt: str) -> List[Dict]:
+    def _write_scenes(self, user_prompt: str, persona_inst: str = "") -> List[Dict]:
         """Write 5 scenes with up to 3 parse attempts."""
         errors: List[str] = []
+        sys_prompt = f"{_SCENE_WRITE_SYSTEM}\n\n[PERSONA DIRECTION: {persona_inst}]" if persona_inst else _SCENE_WRITE_SYSTEM
 
         for attempt in range(1, 4):
             try:
-                raw = generate(_SCENE_WRITE_SYSTEM, user_prompt)
+                raw = generate(sys_prompt, user_prompt)
                 scenes = _parse_scenes(raw)
                 if 5 <= len(scenes) <= 12:
                     return scenes
