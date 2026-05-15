@@ -571,6 +571,7 @@ function GeneratorView({ onStartRun }: { onStartRun: (id: string) => void }) {
   const [mode, setMode] = useState<'selection' | 'text' | 'video'>('selection');
   const [topic, setTopic] = useState('');
   const [persona, setPersona] = useState('The Storyteller');
+  const [platform, setPlatform] = useState('linkedin');
   const [personas, setPersonas] = useState<{id: string; name: string; description: string}[]>([]);
   const [autoApprove, setAutoApprove] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -631,18 +632,41 @@ function GeneratorView({ onStartRun }: { onStartRun: (id: string) => void }) {
 
           <div style={{ marginBottom: 'var(--spacing-md)' }}>
             <label className="title-sm" style={{ display: 'block', marginBottom: 'var(--spacing-xs)' }}>Topic</label>
-            <input type="text" className="text-input" placeholder="e.g., The future of remote work…" />
+            <input 
+              type="text" 
+              className="text-input" 
+              placeholder="e.g., The future of remote work…" 
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+            />
           </div>
           <div style={{ marginBottom: 'var(--spacing-lg)' }}>
             <label className="title-sm" style={{ display: 'block', marginBottom: 'var(--spacing-xs)' }}>Platform</label>
             <div style={{ display: 'flex', gap: 8 }}>
-              {['LinkedIn', 'Twitter', 'Instagram'].map(p => (
-                <button key={p} className="btn-secondary" style={{ flex: 1 }}>{p}</button>
+              {['linkedin', 'twitter'].map(p => (
+                <button 
+                  key={p} 
+                  className={`btn-secondary ${platform === p ? 'active' : ''}`} 
+                  style={{ flex: 1, backgroundColor: platform === p ? 'var(--surface-strong)' : '' }}
+                  onClick={() => setPlatform(p)}
+                >
+                  {p.charAt(0).toUpperCase() + p.slice(1)}
+                </button>
               ))}
             </div>
           </div>
-          <button className="btn-primary" style={{ width: '100%' }} onClick={() => alert('Text generation coming soon!')}>
-            Generate Post
+          <button 
+            className="btn-primary" 
+            style={{ width: '100%' }} 
+            onClick={async () => {
+              setLoading(true);
+              const run = await api.startRun(topic.trim() || 'Auto-discover trending topic', autoApprove, persona, 'text', platform);
+              setLoading(false);
+              if (run) onStartRun(run.run_id);
+            }}
+            disabled={loading}
+          >
+            {loading ? 'Starting…' : 'Generate Post'}
           </button>
         </div>
       </div>

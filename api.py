@@ -368,6 +368,9 @@ def _get_status_label(status: str) -> str:
         "DONE": "Completed",
         "CANCELLED": "Cancelled",
         "FAILED": "Failed",
+        "TEXT_REVIEW": "Reviewing Text",
+        "TEXT_AWAITING_APPROVAL": "Awaiting Text Approval",
+        "TEXT_PUBLISHED": "Text Published",
     }
     return status_map.get(status, status)
 
@@ -532,20 +535,16 @@ def run_pipeline_task(run_id: str, auto_approve: bool, mode: str = "video", plat
 def start_run(req: RunRequest, background_tasks: BackgroundTasks):
     state = PipelineState()
     state.init_db()
-    run_id = state.create_run(req.topic, req.persona)
     
     mode = req.mode or "video"
     platform = req.platform or "linkedin"
     
-    # Store mode and platform in DB for later retrieval
-    import sqlite3
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        "UPDATE pipeline_runs SET mode = ?, platform = ? WHERE run_id = ?",
-        (mode, platform, run_id)
+    run_id = state.create_run(
+        topic=req.topic, 
+        persona=req.persona, 
+        mode=mode, 
+        platform=platform
     )
-    conn.commit()
-    conn.close()
     
     # Run in background
     thread = threading.Thread(target=run_pipeline_task, args=(run_id, req.auto_approve, mode, platform))

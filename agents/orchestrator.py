@@ -172,9 +172,16 @@ class OrchestratorAgent(BaseAgent):
         # Get mode from context or database
         mode = context.get("mode")
         platform = context.get("platform")
-        if not mode:
+        
+        if mode or platform:
+            # Ensure provided config is persisted
+            db_mode = self.state.get_run_mode(run_id)
+            db_platform = self.state.get_run_platform(run_id)
+            mode = mode or db_mode
+            platform = platform or db_platform
+            self.state.update_run_config(run_id, mode, platform)
+        else:
             mode = self.state.get_run_mode(run_id)
-        if not platform:
             platform = self.state.get_run_platform(run_id)
         
         ctx: Dict[str, Any] = {
@@ -193,7 +200,7 @@ class OrchestratorAgent(BaseAgent):
         status_to_agent = _get_status_to_agent(mode)
         agent_order = _TEXT_ORDER if mode == "text" else _VIDEO_ORDER
         
-        self._declare_plan(run_id, is_resume, topic, agent_order)
+        self._declare_plan(run_id, is_resume, topic, agent_order, mode)
 
         status = self.state.get_run_status(run_id)
 
@@ -638,13 +645,13 @@ class OrchestratorAgent(BaseAgent):
         self.log(f"New run created: {placeholder_run_id[:8]}")
         return placeholder_run_id, False, ""
 
-    def _declare_plan(self, run_id: str, is_resume: bool, topic: str, agent_order: List[str] = _VIDEO_ORDER) -> None:
+    def _declare_plan(self, run_id: str, is_resume: bool, topic: str, agent_order: List[str], mode: str) -> None:
         """Log the execution plan and post it to the blackboard."""
         status = self.state.get_run_status(run_id)
-        remaining = self._get_remaining_agents(status, agent_order)
+        remaining = self._get_remaining_agents(status, mode)
 
-        mode = f"RESUMING (status={status}, topic='{topic}')" if is_resume else "STARTING"
-        self.log(f"{mode} run {run_id[:8]}")
+        mode_label = f"RESUMING (status={status}, topic='{topic}')" if is_resume else "STARTING"
+        self.log(f"{mode_label} run {run_id[:8]} [MODE={mode}]")
 
         plan_str = " → ".join(a.upper() for a in remaining) if remaining else "ALREADY DONE"
         self.log(f"Execution plan: {plan_str}")
@@ -657,12 +664,15 @@ class OrchestratorAgent(BaseAgent):
                 "current_status": status,
                 "is_resume": is_resume,
                 "topic": topic,
+                "mode": mode,
             },
         )
 
-    def _get_remaining_agents(self, status: str, agent_order: List[str] = _VIDEO_ORDER) -> List[str]:
+    def _get_remaining_agents(self, status: str, mode: str) -> List[str]:
         """Return agents still to run based on current pipeline status."""
-        status_to_agent = _get_status_to_agent("text") if "text" in agent_order else _get_status_to_agent("video")
+        status_to_agent = _get_status_to_agent(mode)
+        agent_order = _TEXT_ORDER if mode == "text" else _VIDEO_ORDER
+        
         next_agent = status_to_agent.get(status)
         if next_agent is None:
             return []
