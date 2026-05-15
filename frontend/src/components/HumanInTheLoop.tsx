@@ -4,11 +4,12 @@ import { useState } from 'react';
 
 interface Props {
   topics: string[];
+  rationale?: string;
   onApprove: (topic: string) => void;
-  onDismiss: () => void;
+  onReject: () => void;
 }
 
-export default function HumanInTheLoop({ topics, onApprove, onDismiss }: Props) {
+export default function HumanInTheLoop({ topics, rationale = '', onApprove, onReject }: Props) {
   const [selected, setSelected] = useState<string>(topics[0] || '');
   const [custom, setCustom] = useState('');
 
@@ -27,12 +28,19 @@ export default function HumanInTheLoop({ topics, onApprove, onDismiss }: Props) 
         </div>
       </div>
 
-      <p className="body-sm" style={{ opacity: 0.85, marginBottom: 'var(--spacing-lg)' }}>
-        TrendScout discovered these topics. Select the one you want to generate a video about, or type your own.
+      {rationale && (
+        <div style={{ padding: '12px 16px', backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 8, marginBottom: 'var(--spacing-md)' }}>
+          <span className="caption-upper" style={{ color: 'rgba(255,255,255,0.5)', marginBottom: 4, display: 'block' }}>AI Reasoning</span>
+          <p className="body-sm" style={{ color: 'rgba(255,255,255,0.9)' }}>{rationale}</p>
+        </div>
+      )}
+
+      <p className="body-sm" style={{ opacity: 0.85, marginBottom: 'var(--spacing-md)' }}>
+        Select the topic you want to generate a video about, or type your own.
       </p>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--spacing-xs)', marginBottom: 'var(--spacing-md)' }}>
-        {topics.map((t, i) => (
+        {topics.map((t) => (
           <label
             key={t}
             style={{
@@ -69,21 +77,27 @@ export default function HumanInTheLoop({ topics, onApprove, onDismiss }: Props) 
         />
       </div>
 
-      <div style={{ display: 'flex', gap: 'var(--spacing-sm)' }}>
+      <div style={{ display: 'flex', gap: 'var(--spacing-sm)', flexWrap: 'wrap' }}>
         <button
           className="btn-primary"
           style={{ backgroundColor: 'var(--on-dark)', color: 'var(--brand-teal)' }}
           onClick={() => onApprove(finalTopic)}
           disabled={!finalTopic}
         >
-          ✓ Approve &amp; Continue
+          ✓ Continue with: {finalTopic}
+        </button>
+        <button
+          className="btn-secondary"
+          onClick={onReject}
+        >
+          ↻ Get New Topic
         </button>
         <button
           className="btn-ghost"
           style={{ color: 'rgba(255,255,255,0.6)' }}
-          onClick={onDismiss}
+          onClick={() => onApprove('')}
         >
-          Skip (use auto)
+          Let AI Decide
         </button>
       </div>
     </div>

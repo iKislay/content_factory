@@ -147,15 +147,17 @@ function ActiveRunView({
   messages,
   isWaitingForUser,
   topics,
+  rationale,
   onApprove,
-  onDismissHIL,
+  onReject,
 }: {
   run: Run;
   messages: AgentMessage[];
   isWaitingForUser: boolean;
   topics: string[];
+  rationale?: string;
   onApprove: (t: string) => void;
-  onDismissHIL: () => void;
+  onReject: () => void;
 }) {
   const pct = statusProgress(run.status);
   const isDone = run.status === 'DONE';
@@ -169,7 +171,7 @@ function ActiveRunView({
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
         <div>
           <h2 className="display-sm" style={{ marginBottom: 4 }}>{run.topic}</h2>
-          <p className="body-sm" style={{ color: 'var(--muted)' }}>Run ID: {run.run_id.substring(0, 8)} · Started {new Date(run.created_at).toLocaleTimeString()}</p>
+          <p className="body-sm" style={{ color: 'var(--muted)' }}>Run ID: {run.run_id.substring(0, 8)} · {run.time_ago || 'just now'}</p>
         </div>
         {statusBadge(run.status)}
       </div>
@@ -195,8 +197,9 @@ function ActiveRunView({
       {isWaitingForUser && (
         <HumanInTheLoop
           topics={topics}
+          rationale={rationale}
           onApprove={onApprove}
-          onDismiss={onDismissHIL}
+          onReject={onReject}
         />
       )}
 
@@ -225,24 +228,31 @@ function ActiveRunView({
 
 // ─── History View ─────────────────────────────────────────────────────────────
 
-function HistoryView({ onViewRun }: { onViewRun: (id: string) => void }) {
+function HistoryView({ onViewRun, onDeleteAll }: { onViewRun: (id: string) => void; onDeleteAll?: () => void }) {
   const [runs, setRuns] = useState<Run[]>([]);
-  const [stats, setStats] = useState<{ total_runs: number; completed_runs: number; success_rate: number }>({ total_runs: 0, completed_runs: 0, success_rate: 0 });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Promise.all([api.getRuns(), api.getStats()]).then(([r, s]) => {
-      setRuns(r);
-      setStats(s);
-      setLoading(false);
-    });
+    api.getRuns().then(r => { setRuns(r); setLoading(false); });
   }, []);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--spacing-xl)' }}>
-      <div>
-        <h1 className="display-md" style={{ marginBottom: 8 }}>History</h1>
-        <p className="body-md" style={{ color: 'var(--muted)' }}>All content generation runs</p>
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--spacing-xl)' }}>
+        <h2 className="display-sm">Run History</h2>
+        {runs.length > 0 && onDeleteAll && (
+          <button
+            className="btn-ghost"
+            style={{ color: 'var(--error)', fontSize: 13 }}
+            onClick={async () => {
+              if (confirm('Delete all pipeline history? This cannot be undone.')) {
+                await onDeleteAll();
+              }
+            }}
+          >
+            🗑 Delete All
+          </button>
+        )}
       </div>
 
       {/* Stats strip */}
@@ -284,7 +294,7 @@ function HistoryView({ onViewRun }: { onViewRun: (id: string) => void }) {
             <span className="caption" style={{ fontFamily: 'monospace', color: 'var(--muted)' }}>{run.run_id.substring(0, 8)}</span>
             <span className="body-sm" style={{ fontWeight: 500 }}>{run.topic || '—'}</span>
             {statusBadge(run.status)}
-            <span className="body-sm" style={{ color: 'var(--muted)' }}>{new Date(run.created_at).toLocaleDateString()}</span>
+            <span className="body-sm" style={{ color: 'var(--muted)' }}>{run.time_ago || 'just now'}</span>
             <button className="btn-secondary" style={{ padding: '6px 14px', height: 'auto', fontSize: 13 }} onClick={() => onViewRun(run.run_id)}>
               View →
             </button>
@@ -320,8 +330,9 @@ function RunDetailView({ runId, onBack }: { runId: string; onBack: () => void })
         messages={messages}
         isWaitingForUser={false}
         topics={[]}
+        rationale=""
         onApprove={() => {}}
-        onDismissHIL={() => {}}
+        onReject={() => {}}
       />
     </div>
   );
@@ -463,6 +474,7 @@ export default function App() {
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [isWaiting, setIsWaiting] = useState(false);
   const [topics, setTopics] = useState<string[]>([]);
+  const [topicRationale, setTopicRationale] = useState('');
 
   // Poll the active run
   const poll = useCallback(async () => {
@@ -471,18 +483,20 @@ export default function App() {
     if (r) setRun(r);
     setMessages(m);
 
-    // Human-in-the-loop: we check if TOPIC_SELECTED happened and status is still TOPIC_FOUND
-    // and no USER_INPUT has been posted yet
-    if (r && r.status === 'TOPIC_FOUND') {
-      const topicMsg = m.find(msg => msg.msg_type === 'TOPIC_SELECTED');
-      const alreadyApproved = m.some(msg => msg.msg_type === 'USER_INPUT');
-      if (topicMsg && !alreadyApproved) {
-        const topic = topicMsg.payload?.topic;
+    // Human-in-the-loop: check if waiting for topic approval
+    if (r && r.status === 'TOPIC_AWAITING_APPROVAL') {
+      const pendingMsg = m.find(msg => msg.msg_type === 'TOPIC_AWAITING_APPROVAL');
+      const alreadyResponded = m.some(msg => msg.msg_type === 'USER_INPUT');
+      if (pendingMsg && !alreadyResponded) {
+        const topic = pendingMsg.payload?.topic;
+        const rationale = pendingMsg.payload?.rationale || '';
         if (topic) setTopics([topic]);
+        setTopicRationale(rationale);
         setIsWaiting(true);
       }
     } else {
       setIsWaiting(false);
+      setTopicRationale('');
     }
   }, [activeRunId]);
 
@@ -501,14 +515,32 @@ export default function App() {
 
   const handleApprove = async (selectedTopic: string) => {
     if (activeRunId) {
-      await api.approveStep(activeRunId, 'approve', selectedTopic);
+      if (selectedTopic === '') {
+        // Let AI decide - just approve without specific topic
+        await api.approveStep(activeRunId, 'approve', '');
+      } else {
+        await api.approveStep(activeRunId, 'approve', selectedTopic);
+      }
       setIsWaiting(false);
+    }
+  };
+
+  const handleReject = async () => {
+    if (activeRunId) {
+      await api.approveStep(activeRunId, 'reject', '');
+      // Poll again to get the new topic
+      setTimeout(poll, 1000);
     }
   };
 
   const handleViewHistoryRun = (id: string) => {
     setHistoryRunId(id);
     setView('run_detail');
+  };
+
+  const handleDeleteAllRuns = async () => {
+    await api.deleteAllRuns();
+    setRuns([]);
   };
 
   return (
@@ -532,8 +564,9 @@ export default function App() {
             messages={messages}
             isWaitingForUser={isWaiting}
             topics={topics}
+            rationale={topicRationale}
             onApprove={handleApprove}
-            onDismissHIL={() => setIsWaiting(false)}
+            onReject={handleReject}
           />
         )}
 

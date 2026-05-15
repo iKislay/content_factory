@@ -100,5 +100,12 @@ export const api = {
       const data = await res.json();
       return data.images;
     } catch (e) { console.error(e); return []; }
+  },
+
+  async deleteAllRuns(): Promise<boolean> {
+    try {
+      const res = await fetch(`${API_BASE}/runs`, { method: 'DELETE' });
+      return res.ok;
+    } catch (e) { console.error(e); return false; }
   }
 };

@@ -52,17 +52,20 @@ from state import PipelineState
 # ─── Status → Agent routing table ─────────────────────────────────────────────
 
 _STATUS_TO_AGENT: Dict[str, Optional[str]] = {
-    "PENDING":          "trend_scout",
-    "TOPIC_FOUND":      "research",
-    "RESEARCHED":       "planner",
-    "PLANNED":          "narrator",
-    "AWAITING_CRITIC":  "critic",
-    "NARRATED":         "production",
-    "VISUALS_DONE":     "production",   # legacy status — treat as needing production
-    "AUDIO_DONE":       "publisher",
-    "ANIMATED":         "publisher",
-    "COMPILED":         "publisher",
-    "DONE":             None,
+    "PENDING":                 "trend_scout",
+    "TOPIC_AWAITING_APPROVAL": "trend_scout",   # waiting for user to approve topic
+    "TOPIC_FOUND":             "research",
+    "RESEARCHED":              "planner",
+    "PLANNED":                 "narrator",
+    "AWAITING_CRITIC":         "critic",
+    "NARRATED":                "production",
+    "VISUALS_DONE":            "production",   # legacy status — treat as needing production
+    "AUDIO_DONE":              "publisher",
+    "ANIMATED":                "publisher",
+    "COMPILED":                "publisher",
+    "DONE":                   None,
+    "CANCELLED":               None,
+    "FAILED":                  None,
 }
 
 # Ordered agent list used for plan declaration and resume calculation
@@ -103,6 +106,7 @@ class OrchestratorAgent(BaseAgent):
         self,
         run_id: Optional[str] = None,
         context: Dict[str, Any] = {},
+        auto_approve: bool = False,
     ) -> AgentResult:
         """Drive the full pipeline for a run (new or resumed)."""
         run_id, is_resume, topic = self._resolve_run(run_id)
@@ -113,9 +117,43 @@ class OrchestratorAgent(BaseAgent):
             "topic": topic,
             "revision_count": 0,
             "revision_feedback": "",
+            "auto_approve": auto_approve,
         }
 
         while True:
+            current_status = self.state.get_run_status(run_id)
+            if current_status in ("CANCELLED", "FAILED"):
+                self.log(f"Pipeline {current_status.lower()} — stopping")
+                return AgentResult(
+                    success=False,
+                    reasoning=f"Pipeline was {current_status.lower()}",
+                    errors=[f"Pipeline cancelled by user" if current_status == "CANCELLED" else "Pipeline failed"],
+                )
+
+            if status == "TOPIC_AWAITING_APPROVAL":
+                user_input = self._wait_for_topic_approval(run_id)
+                if user_input.get("action") == "reject":
+                    self.log("Topic rejected by user — re-running TrendScout")
+                    status = "PENDING"
+                    continue
+                selected_topic = user_input.get("selected_topic")
+                if selected_topic:
+                    ctx["topic"] = selected_topic
+                    self._update_topic(run_id, selected_topic)
+                    self.post_message(
+                        run_id=run_id,
+                        msg_type="TOPIC_USER_APPROVED",
+                        payload={"topic": selected_topic, "original_topic": ctx.get("topic")},
+                    )
+                else:
+                    self.post_message(
+                        run_id=run_id,
+                        msg_type="TOPIC_USER_APPROVED",
+                        payload={"topic": ctx.get("topic")},
+                    )
+                status = "TOPIC_FOUND"
+                continue
+
             next_agent_name = _STATUS_TO_AGENT.get(status)
 
             if next_agent_name is None:
@@ -130,6 +168,7 @@ class OrchestratorAgent(BaseAgent):
                 self.log(
                     f"[{next_agent_name.upper()}] failed: {result.errors}"
                 )
+                self.state.update_status(run_id, "FAILED")
                 self.post_message(
                     run_id=run_id,
                     msg_type="AGENT_FAILED",
@@ -139,7 +178,12 @@ class OrchestratorAgent(BaseAgent):
                         "reasoning": result.reasoning,
                     },
                 )
-                return result
+                return AgentResult(
+                    success=False,
+                    output=result.output,
+                    reasoning=result.reasoning,
+                    errors=result.errors,
+                )
 
             status = self._advance_status(next_agent_name, run_id, result, ctx)
 
@@ -181,6 +225,20 @@ class OrchestratorAgent(BaseAgent):
             topic = result.output.get("topic", "")
             self._update_topic(run_id, topic)
             ctx["topic"] = topic
+            auto_approve = ctx.get("auto_approve", False)
+            if not auto_approve:
+                self.state.update_status(run_id, "TOPIC_AWAITING_APPROVAL")
+                self.post_message(
+                    run_id=run_id,
+                    msg_type="TOPIC_AWAITING_APPROVAL",
+                    payload={"topic": topic, "rationale": result.output.get("rationale", "")},
+                )
+                return "TOPIC_AWAITING_APPROVAL"
+            self.post_message(
+                run_id=run_id,
+                msg_type="TOPIC_AUTO_APPROVED",
+                payload={"topic": topic, "rationale": result.output.get("rationale", "")},
+            )
             self.state.update_status(run_id, "TOPIC_FOUND")
             return "TOPIC_FOUND"
 
@@ -358,6 +416,26 @@ class OrchestratorAgent(BaseAgent):
         )
         conn.commit()
         conn.close()
+
+    def _wait_for_topic_approval(self, run_id: str) -> dict:
+        """Poll for user input on topic approval."""
+        import time
+        max_wait = 300
+        poll_interval = 2
+        elapsed = 0
+        while elapsed < max_wait:
+            current_status = self.state.get_run_status(run_id)
+            if current_status == "CANCELLED":
+                return {"action": "cancel", "selected_topic": None}
+            user_msg = self.state.get_latest_message(run_id, "USER_INPUT")
+            if user_msg:
+                payload = user_msg.get("payload", {})
+                action = payload.get("action", "")
+                if action in ("approve", "reject"):
+                    return payload
+            time.sleep(poll_interval)
+            elapsed += poll_interval
+        return {"action": "approve", "selected_topic": None}
 
     def _log_production_summary(self, payload: dict) -> None:
         """
