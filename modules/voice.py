@@ -54,8 +54,8 @@ def synthesize_scene_audio(
             text=text,
             output_path=output_path
         )
-        if duration is None:
-            raise VoiceError("Google TTS synthesis failed")
+        if not duration:
+            raise VoiceError(f"Google TTS synthesis failed (returned: {duration})")
         return {"path": output_path, "duration": round(duration, 3)}
     
     else:  # Default to Kokoro

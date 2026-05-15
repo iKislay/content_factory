@@ -303,7 +303,8 @@ class CriticAgent(BaseAgent):
         grounding: Dict[str, Any] = None,
     ) -> Dict[str, Any]:
         """Call the LLM critic and parse the evaluation JSON."""
-        system = _CRITIC_SYSTEM.format(min_score=config.CRITIC_MIN_SCORE)
+        min_score = config.CRITIC_MIN_SCORE
+        system = _CRITIC_SYSTEM.replace("{min_score}", str(min_score))
         user = _build_critic_prompt(scenes, brief, research, grounding or {})
 
         try:
