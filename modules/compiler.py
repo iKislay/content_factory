@@ -32,7 +32,8 @@ def compile_video(
         audio_clip = AudioFileClip(audio_info["path"])
 
         # ffmpeg zoompan might produce a video slightly shorter than requested due to fps rounding
-        actual_duration = min(video_clip.duration, audio_info["duration"])
+        # We subtract 0.02s to avoid moviepy float precision bounds check crashes (e.g. 7.90 > 7.90)
+        actual_duration = max(0.1, min(video_clip.duration, audio_info["duration"]) - 0.02)
         video_clip = video_clip.subclipped(0, actual_duration)
         audio_clip = audio_clip.subclipped(0, actual_duration)
         final_clip = video_clip.with_audio(audio_clip)

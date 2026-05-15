@@ -137,7 +137,11 @@ Search for recent news, trends, or developments related to '{base_topic}' to fin
             rationale = topics_data[0]["rationale"] if topics_data else ""
         except Exception as e:
             self.log(f"Tool-use failed: {e} — using fallback discovery")
-            topic, rationale = self._fallback_topic()
+            if base_topic:
+                topic = base_topic
+                rationale = "User provided topic (tool use failed for subtopics)."
+            else:
+                topic, rationale = self._fallback_topic()
             topics_data = [{"topic": topic, "rationale": rationale}]
 
         source = "tool_use" if all_calls else "fallback"
