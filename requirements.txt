@@ -11,3 +11,6 @@ soundfile
 Pillow
 numpy
 duckduckgo-search
+fastapi
+uvicorn
+pydantic
