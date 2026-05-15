@@ -113,7 +113,9 @@ class TrendScoutAgent(BaseAgent):
 
         try:
             if base_topic:
-                user_prompt = f"""Based on the topic '{base_topic}', find the TOP 3 MOST VIRAL ANGLES or sub-topics that would make a compelling short video right now. 
+                user_prompt = f"""[CRITICAL INSTRUCTION: DO NOT CALL get_trending_topic. Skip step 1 of your system instructions entirely.]
+
+Based on the user's specific requested topic '{base_topic}', find the TOP 3 MOST VIRAL ANGLES or sub-topics that would make a compelling short video right now. 
 
 For each angle, provide:
 - A specific, catchy video title/angle

@@ -22,12 +22,15 @@ def _pollinations_generate(prompt: str, scene_id: int, output_dir: str, max_retr
     filename = f"image_scene_{scene_id}.jpg"
     filepath = os.path.join(output_dir, filename)
 
+    # Append a random seed directly to the prompt text to bypass any server-side caching
+    unique_prompt = f"{prompt} [Seed: {random.randint(1, 1000000)}]"
+
     for attempt in range(max_retries):
         try:
             # Use POST endpoint for better handling of long prompts
             url = f"https://image.pollinations.ai/prompt"
             payload = {
-                "prompt": prompt,
+                "prompt": unique_prompt,
                 "width": config.IMAGE_WIDTH,
                 "height": config.IMAGE_HEIGHT,
                 "nologo": True,

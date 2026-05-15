@@ -4,6 +4,7 @@ from typing import List, Dict
 import config
 
 try:
+    # pyrefly: ignore [missing-import]
     import static_ffmpeg
     static_ffmpeg.add_paths()
 except ImportError:
@@ -18,6 +19,7 @@ def compile_video(
     Loads each scene video, attaches its audio, concatenates all clips,
     exports the final MP4. Returns the path to the final file.
     """
+    # pyrefly: ignore [missing-import]
     from moviepy import VideoFileClip, AudioFileClip, concatenate_videoclips
 
     clips = []
@@ -29,7 +31,10 @@ def compile_video(
         video_clip = VideoFileClip(video_path)
         audio_clip = AudioFileClip(audio_info["path"])
 
-        video_clip = video_clip.subclipped(0, audio_info["duration"])
+        # ffmpeg zoompan might produce a video slightly shorter than requested due to fps rounding
+        actual_duration = min(video_clip.duration, audio_info["duration"])
+        video_clip = video_clip.subclipped(0, actual_duration)
+        audio_clip = audio_clip.subclipped(0, actual_duration)
         final_clip = video_clip.with_audio(audio_clip)
         clips.append(final_clip)
 
