@@ -61,8 +61,18 @@ class TrendScoutAgent(BaseAgent):
         # Resume path — topic already selected in a previous run
         if context.get("topic") and context["topic"] != "TBD":
             topic = context["topic"]
+            previous = self.get_latest(run_id, "TOPIC_SELECTED")
+            prev_payload = previous.get("payload", {}) if previous else {}
+            source = str(prev_payload.get("source") or "resumed")
+            region = str(prev_payload.get("region") or "IN")
             self.log(f"Resuming with existing topic: '{topic}'")
-            self._post_selected(run_id, topic, "Resumed from previous run.", "resumed")
+            self._post_selected(
+                run_id,
+                topic,
+                "Resumed from previous run.",
+                source,
+                region,
+            )
             return AgentResult(
                 success=True,
                 output={"topic": topic, "rationale": "Resumed from previous run."},
@@ -101,7 +111,7 @@ class TrendScoutAgent(BaseAgent):
             f"({[c.tool_name for c in all_calls]})"
         )
 
-        self._post_selected(run_id, topic, rationale, source)
+        self._post_selected(run_id, topic, rationale, source, "IN")
 
         return AgentResult(
             success=True,
@@ -139,7 +149,12 @@ class TrendScoutAgent(BaseAgent):
         return topic, f"Tool-use unavailable; selected '{topic}' from curated list."
 
     def _post_selected(
-        self, run_id: str, topic: str, rationale: str, source: str
+        self,
+        run_id: str,
+        topic: str,
+        rationale: str,
+        source: str,
+        region: str,
     ) -> None:
         """Post TOPIC_SELECTED to the blackboard."""
         self.post_message(
@@ -149,7 +164,7 @@ class TrendScoutAgent(BaseAgent):
                 "topic": topic,
                 "rationale": rationale,
                 "source": source,
-                "region": "IN",
+                "region": region,
             },
             recipient="research",
         )

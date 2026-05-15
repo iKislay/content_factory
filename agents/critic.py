@@ -199,12 +199,34 @@ class CriticAgent(BaseAgent):
 
         self._log_scores(scores)
 
-        # ── Force approval if max revision cycles reached ──────────────────────
+        # ── Max-revision handling ──────────────────────────────────────────────
         forced = False
         if decision == "REVISE" and revision_count >= config.MAX_REVISION_CYCLES:
+            if not is_grounded:
+                # Do not ship factually ungrounded content just to satisfy demo liveness.
+                self.log(
+                    f"Max revision cycles reached with ungrounded draft "
+                    f"(score={overall}) — failing run instead of forcing approval."
+                )
+                return AgentResult(
+                    success=False,
+                    output={
+                        "decision": "REJECT",
+                        "scores": scores,
+                        "grounding": grounding,
+                    },
+                    reasoning=(
+                        "Revision limit reached and narration is still ungrounded in "
+                        "research; refusing forced approval."
+                    ),
+                    errors=[
+                        "Critic rejected ungrounded narration after max revision cycles."
+                    ],
+                )
+
             self.log(
                 f"Max revision cycles ({config.MAX_REVISION_CYCLES}) reached "
-                f"— forcing APPROVE (score={overall})"
+                f"— forcing APPROVE for grounded draft (score={overall})"
             )
             decision = "APPROVE"
             forced = True
