@@ -46,3 +46,7 @@ venv_new/
 # Next.js / Node
 frontend/node_modules/
 frontend/.next/
+# Python venvs
+venv/
+venv_new/
+.env
