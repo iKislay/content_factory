@@ -39,3 +39,10 @@ Thumbs.db
 output/
 temp/
 state.db
+
+# Additional venvs
+venv_new/
+
+# Next.js / Node
+frontend/node_modules/
+frontend/.next/
