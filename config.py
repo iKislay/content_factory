@@ -5,6 +5,7 @@ load_dotenv()
 
 LLM_PROVIDER = "groq"
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_API_KEY2 = os.getenv("GROQ_API_KEY1", "")  # Fallback key
 GROQ_MODEL = "llama-3.3-70b-versatile"
 OLLAMA_BASE_URL = "http://localhost:11434"
 OLLAMA_MODEL = "llama3.2"

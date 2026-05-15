@@ -126,14 +126,19 @@ class PlannerAgent(BaseAgent):
         self.log(f"Planning: '{topic}'")
         rc = self._research_context(research)
 
+        from modules.personas import get_persona
+        persona_name = context.get("persona", "The Analyst")
+        persona_data = get_persona(persona_name)
+        persona_inst = persona_data.get("planner_instruction", "")
+
         # ── Step 1: Audience analysis ─────────────────────────────────────────
         self.log("Step 1/4 — Audience analysis...")
-        audience_profile = self._step_audience(topic, rc, topic_rationale)
+        audience_profile = self._step_audience(topic, rc, topic_rationale, persona_inst)
         self.log(f"  → {audience_profile[:100]}...")
 
         # ── Step 2: Angle selection ───────────────────────────────────────────
         self.log("Step 2/4 — Angle selection (with rejection reasoning)...")
-        angle_data = self._step_angle(topic, rc, audience_profile)
+        angle_data = self._step_angle(topic, rc, audience_profile, persona_inst)
         chosen_angle = angle_data.get("chosen_angle", "")
         rejection_reasoning = angle_data.get("rejection_reasoning", "")
         self.log(f"  → Chosen: {chosen_angle[:100]}")
@@ -142,13 +147,13 @@ class PlannerAgent(BaseAgent):
 
         # ── Step 3: Emotional arc ─────────────────────────────────────────────
         self.log("Step 3/4 — Emotional arc design...")
-        emotional_arc = self._step_arc(topic, rc, audience_profile, chosen_angle)
+        emotional_arc = self._step_arc(topic, rc, audience_profile, chosen_angle, persona_inst)
         arc_summary = " → ".join(b.get("label", "?") for b in emotional_arc)
         self.log(f"  → {arc_summary}")
 
         # ── Step 4: Visual motif ──────────────────────────────────────────────
         self.log("Step 4/4 — Visual motif selection...")
-        visual_motif = self._step_motif(topic, audience_profile, chosen_angle, emotional_arc)
+        visual_motif = self._step_motif(topic, audience_profile, chosen_angle, emotional_arc, persona_inst)
         self.log(f"  → {visual_motif[:100]}")
 
         # ── Assemble ContentBrief ─────────────────────────────────────────────
@@ -188,21 +193,22 @@ class PlannerAgent(BaseAgent):
 
     # ── Step implementations ──────────────────────────────────────────────────
 
-    def _step_audience(self, topic: str, research_ctx: str, rationale: str) -> str:
+    def _step_audience(self, topic: str, research_ctx: str, rationale: str, persona_inst: str = "") -> str:
         """Step 1: Generate audience profile."""
         context_note = f"\nTrend rationale: {rationale}" if rationale else ""
         user = (
             f"Topic: {topic}{context_note}\n\n"
             f"Research brief:\n{research_ctx}"
         )
+        sys_prompt = f"{_AUDIENCE_SYSTEM}\n\n[PERSONA DIRECTION: {persona_inst}]" if persona_inst else _AUDIENCE_SYSTEM
         try:
-            return generate(_AUDIENCE_SYSTEM, user).strip()
+            return generate(sys_prompt, user).strip()
         except Exception as e:
             self.log(f"  Audience step failed: {e} — using fallback")
             return f"Tech-curious viewers aged 22-35 interested in {topic}."
 
     def _step_angle(
-        self, topic: str, research_ctx: str, audience: str
+        self, topic: str, research_ctx: str, audience: str, persona_inst: str = ""
     ) -> Dict[str, Any]:
         """Step 2: Select the best angle and record rejected alternatives."""
         user = (
@@ -210,8 +216,9 @@ class PlannerAgent(BaseAgent):
             f"Audience: {audience}\n\n"
             f"Research brief:\n{research_ctx}"
         )
+        sys_prompt = f"{_ANGLE_SYSTEM}\n\n[PERSONA DIRECTION: {persona_inst}]" if persona_inst else _ANGLE_SYSTEM
         try:
-            raw = generate(_ANGLE_SYSTEM, user)
+            raw = generate(sys_prompt, user)
             return self._parse_json_object(raw)
         except Exception as e:
             self.log(f"  Angle step failed: {e} — using fallback")
@@ -223,7 +230,7 @@ class PlannerAgent(BaseAgent):
             }
 
     def _step_arc(
-        self, topic: str, research_ctx: str, audience: str, angle: str
+        self, topic: str, research_ctx: str, audience: str, angle: str, persona_inst: str = ""
     ) -> List[Dict[str, Any]]:
         """Step 3: Design the 5-beat emotional arc."""
         user = (
@@ -232,8 +239,9 @@ class PlannerAgent(BaseAgent):
             f"Chosen angle: {angle}\n\n"
             f"Research context:\n{research_ctx}"
         )
+        sys_prompt = f"{_ARC_SYSTEM}\n\n[PERSONA DIRECTION: {persona_inst}]" if persona_inst else _ARC_SYSTEM
         try:
-            raw = generate(_ARC_SYSTEM, user)
+            raw = generate(sys_prompt, user)
             arc = self._parse_json_array(raw)
             if len(arc) == 5:
                 return arc
@@ -249,7 +257,7 @@ class PlannerAgent(BaseAgent):
         ]
 
     def _step_motif(
-        self, topic: str, audience: str, angle: str, arc: List[Dict]
+        self, topic: str, audience: str, angle: str, arc: List[Dict], persona_inst: str = ""
     ) -> str:
         """Step 4: Choose a visual motif that ties all 5 scenes together."""
         arc_summary = ", ".join(
@@ -261,8 +269,9 @@ class PlannerAgent(BaseAgent):
             f"Angle: {angle}\n"
             f"Emotional arc: {arc_summary}"
         )
+        sys_prompt = f"{_MOTIF_SYSTEM}\n\n[PERSONA DIRECTION: {persona_inst}]" if persona_inst else _MOTIF_SYSTEM
         try:
-            return generate(_MOTIF_SYSTEM, user).strip()
+            return generate(sys_prompt, user).strip()
         except Exception as e:
             self.log(f"  Motif step failed: {e} — using fallback")
             return (

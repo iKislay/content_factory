@@ -48,22 +48,31 @@ def generate(system_prompt: str, user_prompt: str) -> str:
 
 
 def _groq_generate(system_prompt: str, user_prompt: str) -> str:
-    """Generate using Groq SDK."""
-    if not config.GROQ_API_KEY:
+    """Generate using Groq SDK with fallback to second key."""
+    keys = [k for k in [config.GROQ_API_KEY, config.GROQ_API_KEY2] if k]
+    if not keys:
         raise LLMError("GROQ_API_KEY not set")
-
-    client = Groq(api_key=config.GROQ_API_KEY)
-    response = client.chat.completions.create(
-        model=config.GROQ_MODEL,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.7,
-        max_tokens=2000,
-    )
-    print("[LLM] Using groq")
-    return response.choices[0].message.content
+    
+    for i, api_key in enumerate(keys):
+        try:
+            client = Groq(api_key=api_key)
+            response = client.chat.completions.create(
+                model=config.GROQ_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.7,
+                max_tokens=2000,
+            )
+            print(f"[LLM] Using groq (key {i+1})")
+            return response.choices[0].message.content
+        except Exception as e:
+            print(f"[LLM] Groq key {i+1} failed: {e}")
+            if i < len(keys) - 1:
+                print("[LLM] Trying fallback key...")
+                continue
+            raise LLMError("All Groq keys failed")
 
 
 def _ollama_generate(system_prompt: str, user_prompt: str) -> str:
@@ -125,7 +134,7 @@ def generate_with_tools(
         text = generate(system_prompt, user_prompt)
         return text, [], []
 
-    if config.LLM_PROVIDER == "groq" and config.GROQ_API_KEY:
+    if config.LLM_PROVIDER == "groq" and (config.GROQ_API_KEY or config.GROQ_API_KEY2):
         return _groq_tool_loop(
             system_prompt, user_prompt, tools, executor, max_rounds
         )
@@ -145,10 +154,42 @@ def _groq_tool_loop(
     executor: Any,
     max_rounds: int,
 ) -> Tuple[str, List, List]:
-    """Groq API native function-calling loop."""
+    """Groq API native function-calling loop with fallback."""
     from tools.executor import ToolCall  # local import avoids circular dep
 
-    client = Groq(api_key=config.GROQ_API_KEY)
+    keys = [k for k in [config.GROQ_API_KEY, config.GROQ_API_KEY2] if k]
+    if not keys:
+        raise LLMError("GROQ_API_KEY not set")
+    
+    groq_tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.parameters,
+            },
+        }
+        for t in tools
+        if t is not None
+    ]
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    
+    last_error = None
+    for key_idx, api_key in enumerate(keys):
+        try:
+            client = Groq(api_key=api_key)
+            break
+        except Exception as e:
+            last_error = e
+            if key_idx < len(keys) - 1:
+                print(f"[LLM] Groq key {key_idx+1} init failed, trying fallback...")
+                continue
+            raise LLMError(f"All Groq keys failed: {last_error}")
 
     groq_tools = [
         {
