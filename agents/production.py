@@ -249,6 +249,31 @@ class ProductionAgent(BaseAgent):
         audio_results: Dict[int, dict] = {}
         all_tasks: List[SceneTask] = []
 
+        # ── Check for pre-existing assets before generating ──────────────────────
+        existing_image_paths = self.state.get_image_paths(run_id)
+        existing_audio_map = self.state.get_audio_map(run_id)
+
+        skipped_images = 0
+        skipped_audio = 0
+
+        for scene in scenes:
+            sid = scene["scene_id"]
+            img_file = os.path.join(config.TEMP_DIR, f"image_scene_{sid}.jpg")
+            if existing_image_paths and sid <= len(existing_image_paths):
+                path = existing_image_paths[sid - 1]
+                if os.path.exists(path):
+                    image_results[sid] = path
+                    skipped_images += 1
+            if existing_audio_map and sid in existing_audio_map:
+                audio_results[sid] = existing_audio_map[sid]
+                skipped_audio += 1
+
+        if skipped_images or skipped_audio:
+            self.log(
+                f"Resuming: skipping {skipped_images} existing images, "
+                f"{skipped_audio} existing audio clips"
+            )
+
         with ThreadPoolExecutor(
             max_workers=config.MAX_PRODUCTION_WORKERS,
             thread_name_prefix="prod",
@@ -257,9 +282,12 @@ class ProductionAgent(BaseAgent):
 
             # Submit ALL image tasks first (submission is O(1) — they queue immediately)
             for scene in scenes:
+                sid = scene["scene_id"]
+                if sid in image_results:
+                    continue
                 task = SceneTask(
-                    task_id=f"img_{scene['scene_id']}",
-                    scene_id=scene["scene_id"],
+                    task_id=f"img_{sid}",
+                    scene_id=sid,
                     asset_type="image",
                     submitted_at=time.monotonic(),
                 )
@@ -271,9 +299,12 @@ class ProductionAgent(BaseAgent):
 
             # Submit ALL audio tasks immediately after (not after images complete)
             for scene in scenes:
+                sid = scene["scene_id"]
+                if sid in audio_results:
+                    continue
                 task = SceneTask(
-                    task_id=f"aud_{scene['scene_id']}",
-                    scene_id=scene["scene_id"],
+                    task_id=f"aud_{sid}",
+                    scene_id=sid,
                     asset_type="audio",
                     submitted_at=time.monotonic(),
                 )
@@ -284,9 +315,9 @@ class ProductionAgent(BaseAgent):
                 future_to_task[future] = task
 
             self.log(
-                f"Submitted {total_tasks} tasks to executor "
-                f"(workers={config.MAX_PRODUCTION_WORKERS}): "
-                f"{len(scenes)} images + {len(scenes)} audio"
+                f"Submitted {len(future_to_task)} tasks to executor "
+                f"({len([t for t in all_tasks if t.asset_type=='image' and t.scene_id not in image_results])} images + "
+                f"{len([t for t in all_tasks if t.asset_type=='audio' and t.scene_id not in audio_results])} audio)"
             )
 
             # ── Process completions in arrival order ──────────────────────────
