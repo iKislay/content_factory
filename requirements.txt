@@ -6,3 +6,6 @@ kokoro-onnx
 moviepy
 ffmpeg-python
 tenacity
+soundfile
+Pillow
+numpy
