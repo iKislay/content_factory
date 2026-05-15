@@ -62,13 +62,15 @@ _log = logger.get_pipeline_logger("orchestrator")
 
 _STATUS_TO_AGENT: Dict[str, Optional[str]] = {
     "PENDING":                 "trend_scout",
-    "TOPIC_AWAITING_APPROVAL": "trend_scout",   # waiting for user to approve topic
+    "TOPIC_AWAITING_APPROVAL": "trend_scout",
     "TOPIC_FOUND":             "research",
     "RESEARCHED":              "planner",
     "PLANNED":                 "narrator",
     "AWAITING_CRITIC":         "critic",
+    "SCRIPT_AWAITING_APPROVAL": "critic",      # user can review/edit script
     "NARRATED":                "production",
-    "VISUALS_DONE":            "production",   # legacy status — treat as needing production
+    "STYLE_AWAITING_APPROVAL": "production",  # user selects visual style
+    "VISUALS_DONE":            "production",
     "AUDIO_DONE":              "publisher",
     "ANIMATED":                "publisher",
     "COMPILED":                "publisher",
@@ -176,6 +178,41 @@ class OrchestratorAgent(BaseAgent):
                         payload={"topic": ctx.get("topic")},
                     )
                 status = "TOPIC_FOUND"
+                continue
+
+            # Script review decision point (after Critic approves)
+            if status == "SCRIPT_AWAITING_APPROVAL":
+                user_input = self._wait_for_approval(run_id, "SCRIPT_APPROVAL")
+                if user_input.get("action") == "reject":
+                    self.log("Script rejected — sending back for revision")
+                    ctx["revision_count"] = ctx.get("revision_count", 0) + 1
+                    ctx["revision_feedback"] = user_input.get("feedback", "Script needs revision")
+                    status = "PLANNED"
+                    continue
+                
+                # User approved - check if they edited the script
+                edited_scenes = user_input.get("edited_scenes")
+                if edited_scenes:
+                    self.state.save_scenes(run_id, edited_scenes)
+                    ctx["scenes"] = edited_scenes
+                    self.log("Script edited by user")
+                
+                self.post_message(run_id=run_id, msg_type="SCRIPT_APPROVED", payload={})
+                status = "NARRATED"
+                continue
+
+            # Visual style decision point (before Production)
+            if status == "STYLE_AWAITING_APPROVAL":
+                user_input = self._wait_for_approval(run_id, "STYLE_APPROVAL")
+                selected_style = user_input.get("selected_style", "minimalist")
+                ctx["visual_style"] = selected_style
+                self.post_message(
+                    run_id=run_id,
+                    msg_type="VISUAL_STYLE_SELECTED",
+                    payload={"style": selected_style}
+                )
+                self.log(f"Visual style selected: {selected_style}")
+                status = "NARRATED"
                 continue
 
             next_agent_name = _STATUS_TO_AGENT.get(status)
@@ -301,18 +338,34 @@ class OrchestratorAgent(BaseAgent):
             decision = result.output.get("decision", "APPROVE")
 
             if decision == "APPROVE":
-                # Persist the approved scenes and advance
                 scenes = result.output.get("scenes", ctx.get("narrator_scenes", []))
                 self.state.save_scenes(run_id, scenes)
-                self.state.update_status(run_id, "NARRATED")
                 ctx["scenes"] = scenes
                 forced = result.output.get("forced", False)
                 revision_count = ctx.get("revision_count", 0)
-                self.log(
-                    f"[CRITIC APPROVED] scenes saved "
-                    f"(revisions={revision_count}, forced={forced})"
+                
+                auto_approve = ctx.get("auto_approve", False)
+                
+                # Post the approved scenes for UI to display
+                self.post_message(
+                    run_id=run_id,
+                    msg_type="NARRATIVE_APPROVED",
+                    payload={"scenes": scenes, "topic": ctx.get("topic", "")},
                 )
-                return "NARRATED"
+                
+                if auto_approve:
+                    self.log(f"[CRITIC APPROVED] scenes saved (auto-approve, revisions={revision_count}, forced={forced})")
+                    self.state.update_status(run_id, "NARRATED")
+                    return "NARRATED"
+                
+                self.log(f"[CRITIC APPROVED] waiting for script review (revisions={revision_count}, forced={forced})")
+                self.state.update_status(run_id, "SCRIPT_AWAITING_APPROVAL")
+                self.post_message(
+                    run_id=run_id,
+                    msg_type="SCRIPT_AWAITING_APPROVAL",
+                    payload={"scenes": scenes, "topic": ctx.get("topic", "")},
+                )
+                return "SCRIPT_AWAITING_APPROVAL"
 
             else:
                 # Revision loop: revert to PLANNED, inject feedback into ctx
@@ -588,14 +641,18 @@ class OrchestratorAgent(BaseAgent):
 
     def _wait_for_topic_approval(self, run_id: str) -> dict:
         """Poll for user input on topic approval."""
+        return self._wait_for_approval(run_id, "topic")
+
+    def _wait_for_approval(self, run_id: str, approval_type: str) -> dict:
+        """Generic polling for any approval type."""
         import time
-        max_wait = 300
+        max_wait = 600
         poll_interval = 2
         elapsed = 0
         while elapsed < max_wait:
             current_status = self.state.get_run_status(run_id)
-            if current_status == "CANCELLED":
-                return {"action": "cancel", "selected_topic": None}
+            if current_status in ("CANCELLED", "FAILED"):
+                return {"action": "cancel"}
             user_msg = self.state.get_latest_message(run_id, "USER_INPUT")
             if user_msg:
                 payload = user_msg.get("payload", {})
@@ -604,7 +661,7 @@ class OrchestratorAgent(BaseAgent):
                     return payload
             time.sleep(poll_interval)
             elapsed += poll_interval
-        return {"action": "approve", "selected_topic": None}
+        return {"action": "approve"}
 
     def _log_production_summary(self, payload: dict) -> None:
         """

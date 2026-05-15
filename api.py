@@ -159,6 +159,141 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
+# Visual style options
+VISUAL_STYLES = [
+    {"id": "minimalist", "name": "Minimalist Vector", "description": "Clean, flat design with bold colors"},
+    {"id": "cinematic", "name": "Cinematic", "description": "Dark, dramatic with dramatic lighting"},
+    {"id": "3d_claymation", "name": "3D Claymation", "description": "Playful 3D animated characters"},
+    {"id": "cyberpunk", "name": "Cyberpunk", "description": "Neon lights, futuristic cityscapes"},
+    {"id": "watercolor", "name": "Watercolor Art", "description": "Soft, painted aesthetic"},
+    {"id": "retro_vhs", "name": "Retro VHS", "description": "90s VHS tape aesthetic with grain"},
+]
+
+@app.get("/api/visual-styles")
+def get_visual_styles():
+    return {"styles": VISUAL_STYLES}
+
+@app.get("/api/runs/{run_id}/scenes")
+def get_scenes(run_id: str):
+    conn = get_db_connection()
+    cursor = conn.execute("SELECT scenes_json FROM pipeline_runs WHERE run_id = ?", (run_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row or not row[0]:
+        return {"scenes": []}
+    scenes = json.loads(row[0])
+    return {"scenes": scenes}
+
+@app.put("/api/runs/{run_id}/scenes")
+def update_scenes(run_id: str, req: dict):
+    scenes_json = json.dumps(req.get("scenes", []))
+    conn = get_db_connection()
+    conn.execute("UPDATE pipeline_runs SET scenes_json = ?, updated_at = ? WHERE run_id = ?",
+                 (scenes_json, datetime.now().isoformat(), run_id))
+    conn.commit()
+    conn.close()
+    return {"status": "ok"}
+
+@app.post("/api/runs/{run_id}/visual-style")
+def set_visual_style(run_id: str, req: dict):
+    style = req.get("style", "minimalist")
+    conn = get_db_connection()
+    cursor = conn.execute("SELECT status FROM pipeline_runs WHERE run_id = ?", (run_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Run not found")
+    conn.execute("UPDATE pipeline_runs SET updated_at = ? WHERE run_id = ?",
+                 (datetime.now().isoformat(), run_id))
+    conn.commit()
+    conn.close()
+    
+    import sqlite3 as sqllib
+    conn2 = sqllib.connect(config.DB_PATH)
+    conn2.execute("INSERT OR REPLACE INTO agent_messages (id, run_id, sender, msg_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                  (str(uuid.uuid4()), run_id, "USER", "VISUAL_STYLE_SELECTED", json.dumps({"style": style}), datetime.now().isoformat()))
+    conn2.commit()
+    conn2.close()
+    
+    return {"status": "ok", "style": style}
+
+@app.post("/api/runs/{run_id}/regenerate-image/{scene_id}")
+def regenerate_image(run_id: str, scene_id: int, background_tasks: BackgroundTasks):
+    conn = get_db_connection()
+    cursor = conn.execute("SELECT status, scenes_json FROM pipeline_runs WHERE run_id = ?", (run_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Run not found")
+    conn.close()
+    
+    background_tasks.add_task(regenerate_scene_image, run_id, scene_id)
+    return {"status": "ok", "message": f"Regenerating image for scene {scene_id}"}
+
+def regenerate_scene_image(run_id: str, scene_id: int):
+    try:
+        state = PipelineState()
+        scenes_msg = state.get_latest_message(run_id, "NARRATIVE_APPROVED")
+        if not scenes_msg:
+            scenes_msg = state.get_latest_message(run_id, "NARRATIVE_DRAFT")
+        if not scenes_msg:
+            return
+        
+        scenes = scenes_msg.get("payload", {}).get("scenes", [])
+        scene = next((s for s in scenes if s.get("scene_id") == scene_id), None)
+        if not scene:
+            return
+        
+        from modules.visuals import generate_image
+        visual_style_msg = state.get_latest_message(run_id, "VISUAL_STYLE_SELECTED")
+        style = visual_style_msg.get("payload", {}).get("style", "minimalist") if visual_style_msg else "minimalist"
+        
+        prompt = f"{scene.get('visual_prompt', '')}, {style} style, premium minimalist aesthetic, clean composition, 9:16 vertical video"
+        image_path = generate_image(prompt, scene_id, config.TEMP_DIR)
+        
+        image_paths = state.get_image_paths(run_id)
+        if scene_id <= len(image_paths):
+            image_paths[scene_id - 1] = image_path
+            state.save_image_paths(run_id, image_paths)
+        
+        state.post_message(run_id, "IMAGE_REGENERATED", {"scene_id": scene_id, "image_path": image_path})
+        print(f"[REGENERATE] Scene {scene_id} image regenerated: {image_path}")
+    except Exception as e:
+        print(f"[REGENERATE] Failed for scene {scene_id}: {e}")
+
+@app.post("/api/runs/{run_id}/upload-image/{scene_id}")
+def upload_image(run_id: str, scene_id: int, req: dict):
+    import base64
+    image_data = req.get("image_data", "")
+    if not image_data:
+        raise HTTPException(status_code=400, detail="No image data provided")
+    
+    try:
+        image_bytes = base64.b64decode(image_data)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid base64 image data")
+    
+    filename = f"temp/custom_scene_{scene_id}.jpg"
+    os.makedirs(config.TEMP_DIR, exist_ok=True)
+    filepath = os.path.join(config.TEMP_DIR, filename)
+    
+    with open(filepath, "wb") as f:
+        f.write(image_bytes)
+    
+    state = PipelineState()
+    image_paths = state.get_image_paths(run_id)
+    while len(image_paths) < scene_id:
+        image_paths.append("")
+    if scene_id <= len(image_paths):
+        image_paths[scene_id - 1] = filepath
+    else:
+        image_paths.append(filepath)
+    state.save_image_paths(run_id, image_paths)
+    
+    state.post_message(run_id, "IMAGE_UPLOADED", {"scene_id": scene_id, "image_path": filepath})
+    
+    return {"status": "ok", "image_path": filepath}
+
 @app.websocket("/ws/pipeline")
 async def websocket_endpoint(websocket: WebSocket):
     """
