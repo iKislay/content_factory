@@ -34,58 +34,71 @@ class LLMError(Exception):
 # ─── Simple text generation (unchanged) ───────────────────────────────────────
 
 
-@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=10))
+@retry(stop=stop_after_attempt(1), wait=wait_exponential(multiplier=1, min=2, max=10))
 def generate(system_prompt: str, user_prompt: str) -> str:
-    """Generate text using LLM. Tries Groq first, falls back to Ollama."""
-    if config.LLM_PROVIDER == "groq":
+    """Generate text using LLM. Tries Groq keys first, then Ollama keys."""
+    # 1. Try Groq (Grok) keys
+    groq_keys = [k for k in [config.GROQ_API_KEY, config.GROQ_API_KEY2] if k]
+    for i, api_key in enumerate(groq_keys):
         try:
-            return _groq_generate(system_prompt, user_prompt)
-        except Exception as e:
-            print(f"[LLM] Groq failed: {e}, falling back to Ollama")
-            return _ollama_generate(system_prompt, user_prompt)
-    else:
-        return _ollama_generate(system_prompt, user_prompt)
-
-
-def _groq_generate(system_prompt: str, user_prompt: str) -> str:
-    """Generate using Groq SDK with fallback to second key."""
-    keys = [k for k in [config.GROQ_API_KEY, config.GROQ_API_KEY2] if k]
-    if not keys:
-        raise LLMError("GROQ_API_KEY not set")
-    
-    for i, api_key in enumerate(keys):
-        try:
-            client = Groq(api_key=api_key)
-            response = client.chat.completions.create(
-                model=config.GROQ_MODEL,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.7,
-                max_tokens=2000,
-            )
-            print(f"[LLM] Using groq (key {i+1})")
-            return response.choices[0].message.content
+            return _groq_generate_with_key(system_prompt, user_prompt, api_key, i+1)
         except Exception as e:
             print(f"[LLM] Groq key {i+1} failed: {e}")
-            if i < len(keys) - 1:
-                print("[LLM] Trying fallback key...")
-                continue
-            raise LLMError("All Groq keys failed")
+            if i == len(groq_keys) - 1:
+                print("[LLM] All Groq keys failed, falling back to Ollama")
+
+    # 2. Try Ollama keys
+    ollama_keys = [k for k in [config.OLLAMA_API_KEY1, config.OLLAMA_API_KEY2, config.OLLAMA_API_KEY3] if k]
+    if not ollama_keys:
+        # If no keys provided, try without key (standard local Ollama)
+        return _ollama_generate(system_prompt, user_prompt)
+    
+    for i, api_key in enumerate(ollama_keys):
+        try:
+            return _ollama_generate(system_prompt, user_prompt, api_key, i+1)
+        except Exception as e:
+            print(f"[LLM] Ollama key {i+1} failed: {e}")
+            if i == len(ollama_keys) - 1:
+                raise LLMError("All LLM providers (Groq and Ollama) failed")
+    
+    return _ollama_generate(system_prompt, user_prompt)
 
 
-def _ollama_generate(system_prompt: str, user_prompt: str) -> str:
-    """Generate using Ollama streaming API."""
+def _groq_generate_with_key(system_prompt: str, user_prompt: str, api_key: str, key_num: int) -> str:
+    """Generate using a specific Groq key."""
+    client = Groq(api_key=api_key)
+    response = client.chat.completions.create(
+        model=config.GROQ_MODEL,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=0.7,
+        max_tokens=2000,
+    )
+    print(f"[LLM] Using groq (key {key_num})")
+    return response.choices[0].message.content
+
+
+def _ollama_generate(system_prompt: str, user_prompt: str, api_key: str = "", key_num: Optional[int] = None) -> str:
+    """Generate using Ollama streaming API with optional key."""
     import requests as _requests
 
     url = f"{config.OLLAMA_BASE_URL}/api/generate"
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    
     payload = {
         "model": config.OLLAMA_MODEL,
         "prompt": f"System: {system_prompt}\n\nUser: {user_prompt}",
         "stream": True,
     }
-    response = _requests.post(url, json=payload, timeout=120)
+    
+    key_info = f" (key {key_num})" if key_num else ""
+    print(f"[LLM] Trying ollama{key_info}...")
+    
+    response = _requests.post(url, json=payload, headers=headers, timeout=120)
     if response.status_code != 200:
         raise LLMError(f"Ollama returned status {response.status_code}")
 
@@ -98,7 +111,6 @@ def _ollama_generate(system_prompt: str, user_prompt: str) -> str:
                 if "response" in chunk:
                     full_text += chunk["response"]
 
-    print("[LLM] Falling back to ollama")
     return full_text.strip()
 
 
@@ -114,34 +126,26 @@ def generate_with_tools(
 ) -> Tuple[str, List["ToolCall"], List["ToolResult"]]:
     """
     Run an agentic LLM loop where the model can invoke tools autonomously.
-
-    The model receives the tool schemas, decides which tools to call (if any),
-    the executor runs them, results are fed back, and the loop continues until
-    the model produces a final text response or max_rounds is exhausted.
-
-    Args:
-        system_prompt: System instruction for the LLM.
-        user_prompt:   Initial user message.
-        tools:         List of ToolDef instances available to the model.
-        executor:      ToolExecutor that dispatches calls and records results.
-        max_rounds:    Maximum tool-call rounds before forcing a final answer.
-
-    Returns:
-        (final_text, all_tool_calls, all_tool_results)
     """
     if not tools:
         # No tools — just use regular generate()
         text = generate(system_prompt, user_prompt)
         return text, [], []
 
-    if config.LLM_PROVIDER == "groq" and (config.GROQ_API_KEY or config.GROQ_API_KEY2):
-        return _groq_tool_loop(
-            system_prompt, user_prompt, tools, executor, max_rounds
-        )
-    else:
-        return _ollama_tool_loop(
-            system_prompt, user_prompt, tools, executor, max_rounds
-        )
+    # Try Groq tool loop if available
+    groq_keys = [k for k in [config.GROQ_API_KEY, config.GROQ_API_KEY2] if k]
+    if config.LLM_PROVIDER == "groq" and groq_keys:
+        try:
+            return _groq_tool_loop(
+                system_prompt, user_prompt, tools, executor, max_rounds
+            )
+        except Exception as e:
+            print(f"[LLM] Groq tool loop failed: {e}, falling back to Ollama tool loop")
+
+    # Fallback to Ollama tool loop
+    return _ollama_tool_loop(
+        system_prompt, user_prompt, tools, executor, max_rounds
+    )
 
 
 # ─── Groq native function-calling loop ────────────────────────────────────────
@@ -295,10 +299,9 @@ def _ollama_tool_loop(
 ) -> Tuple[str, List, List]:
     """
     Simulated tool loop for Ollama (no native function-calling support).
-
-    The system prompt is augmented with tool descriptions and a JSON calling
-    convention. The model responds either with a tool-call JSON block or with
-    its final answer. Results are re-injected as follow-up user messages.
+    
+    Uses the robust generate() function for each step to benefit from
+    the 5-key fallback logic.
     """
     from tools.executor import ToolCall
 
@@ -320,7 +323,8 @@ def _ollama_tool_loop(
     last_text = ""
 
     for round_num in range(max_rounds + 1):
-        response = _ollama_generate(augmented_system, conversation)
+        # Use generate() to get 5-key fallback benefit
+        response = generate(augmented_system, conversation)
         last_text = response
 
         # Try to parse as tool call

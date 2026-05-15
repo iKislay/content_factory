@@ -9,6 +9,9 @@ GROQ_API_KEY2 = os.getenv("GROQ_API_KEY1", "")  # Fallback key
 GROQ_MODEL = "llama-3.3-70b-versatile"
 OLLAMA_BASE_URL = "http://localhost:11434"
 OLLAMA_MODEL = "llama3.2"
+OLLAMA_API_KEY1 = os.getenv("OLLAMA_API_KEY1", "")
+OLLAMA_API_KEY2 = os.getenv("OLLAMA_API_KEY2", "")
+OLLAMA_API_KEY3 = os.getenv("OLLAMA_API_KEY3", "")
 
 # Google Cloud TTS Configuration
 TTS_PROVIDER = os.getenv("TTS_PROVIDER", "google")  # "google" or "kokoro"
