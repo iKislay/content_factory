@@ -20,6 +20,7 @@ OPENERS = [
 ]
 
 STYLE_LOCK_BASE = "premium minimalist aesthetic, clean composition, 9:16 vertical frame, soft bokeh background, teal-and-orange color grade, photorealistic, 4K"
+STYLE_LOCK_LOWER = STYLE_LOCK_BASE.lower()
 
 
 def generate_narrative(topic: str) -> List[Dict]:
@@ -87,5 +88,36 @@ def _parse_scenes(text: str) -> List[Dict]:
             raise NarratorError(f"Scene {i} missing required keys")
         if scene["motion_directive"] not in motion_options:
             scene["motion_directive"] = "static"
+        scene["visual_prompt"] = _normalize_visual_prompt(scene.get("visual_prompt", ""))
 
     return scenes
+
+
+def _normalize_visual_prompt(raw: str) -> str:
+    """
+    Sanitize model-provided visual prompts and enforce canonical style suffix.
+
+    Prevents prompt-engineering leakage such as placeholder tokens
+    (e.g. STYLE_LOCK / STYLE_LOCK_BASE) or schema/meta instruction text from
+    reaching downstream image generation.
+    """
+    text = str(raw or "").strip()
+
+    # Remove known placeholder/meta markers that should never reach image tools.
+    text = re.sub(r"style[_\s-]*lock(?:_base)?", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(visual_prompt|scene_id|motion_directive|narration)\b", "", text, flags=re.IGNORECASE)
+
+    # If the style suffix is present, strip it from the base prompt before canonical append.
+    lower = text.lower()
+    style_idx = lower.find(STYLE_LOCK_LOWER)
+    if style_idx != -1:
+        text = text[:style_idx].strip(" ,")
+
+    # Remove obvious instruction-ish leftovers and normalize punctuation.
+    text = re.sub(r"\b(append|json|schema|return only|do not include)\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip(" ,:-")
+
+    if not text:
+        text = "cinematic subject close-up"
+
+    return f"{text}, {STYLE_LOCK_BASE}"
