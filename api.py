@@ -4,6 +4,7 @@ from pydantic import BaseModel
 import sqlite3
 import json
 import os
+import asyncio
 import threading
 import base64
 from datetime import datetime
@@ -152,6 +153,11 @@ app.add_middleware(
 )
 
 DB_PATH = "state.db"
+
+def get_db_connection():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 @app.websocket("/ws/pipeline")
 async def websocket_endpoint(websocket: WebSocket):

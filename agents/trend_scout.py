@@ -62,6 +62,10 @@ class TrendScoutAgent(BaseAgent):
     def run(self, run_id: str, context: Dict[str, Any]) -> AgentResult:
         user_provided_topic = context.get("topic")
         
+        # Empty string means user rejected and wants fresh discovery
+        if user_provided_topic == "":
+            user_provided_topic = None
+        
         auto_keywords = ['auto-discover', 'find topic', 'discover', 'trending', 'generate topic']
         is_auto_topic = user_provided_topic and any(kw in user_provided_topic.lower() for kw in auto_keywords)
         
@@ -70,8 +74,12 @@ class TrendScoutAgent(BaseAgent):
             base_topic = user_provided_topic.strip()
             self.log(f"User provided base topic: '{base_topic}' — finding related angles...")
 
-        # Resume path — topic already selected in a previous run
-        if context.get("topic") and context["topic"] != "TBD":
+        # Resume path — only if not a fresh run with base_topic
+        # Check if this is actually a resumed run by looking at existing messages
+        previous_msg = self.get_latest(run_id, "TOPIC_SELECTED")
+        is_resumed = previous_msg is not None and context.get("topic") and context["topic"] != "TBD" and context["topic"] != "" and not base_topic
+        
+        if is_resumed:
             topic = context["topic"]
             previous = self.get_latest(run_id, "TOPIC_SELECTED")
             prev_payload = previous.get("payload", {}) if previous else {}
@@ -105,9 +113,15 @@ class TrendScoutAgent(BaseAgent):
 
         try:
             if base_topic:
-                user_prompt = f"Find the top 3 best angles or sub-topics for a viral short video about: '{base_topic}' right now."
+                user_prompt = f"""Based on the topic '{base_topic}', find the TOP 3 MOST VIRAL ANGLES or sub-topics that would make a compelling short video right now. 
+
+For each angle, provide:
+- A specific, catchy video title/angle
+- Why it's currently trending or viral-worthy
+
+Search for recent news, trends, or developments related to '{base_topic}' to find the most timely and engaging angles."""
             else:
-                user_prompt = "Find the top 3 best topics for a viral short video right now."
+                user_prompt = "Find the top 3 best topics for a viral short video right now. Search for what's currently trending."
             
             final_text, all_calls, all_results = generate_with_tools(
                 system_prompt=_SCOUT_SYSTEM,

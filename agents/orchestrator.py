@@ -149,6 +149,9 @@ class OrchestratorAgent(BaseAgent):
                 user_input = self._wait_for_topic_approval(run_id)
                 if user_input.get("action") == "reject":
                     self.log("Topic rejected by user — re-running TrendScout")
+                    # Clear topic from context and database so TrendScout does fresh discovery
+                    ctx["topic"] = ""
+                    self._update_topic(run_id, "")
                     status = "PENDING"
                     continue
                 
