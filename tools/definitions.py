@@ -3,7 +3,7 @@
 Concrete tool implementations registered on the global registry.
 
 Import this module to trigger all @registry.tool() decorations.
-All seven tools are usable via generate_with_tools() or directly.
+All eight tools are usable via generate_with_tools() or directly.
 
 Tools registered here:
   1. web_search         — DuckDuckGo query → list of {title, snippet, url}
@@ -13,6 +13,7 @@ Tools registered here:
   5. synthesize_tts     — Kokoro TTS → {path, duration} dict
   6. search_wikipedia   — Wikipedia REST API → structured summary + key facts
   7. search_news        — DuckDuckGo News → recent articles with dates
+  8. fetch_rss_feed     — RSS.app feeds → list of feed items
 """
 
 from __future__ import annotations
@@ -344,4 +345,42 @@ def search_news(topic: str, max_results: int = 5) -> List[Dict[str, Any]]:
 
     articles = _search(topic, max_results=max_results)
     return [a.to_dict() for a in articles]
+
+
+# ─── 8. fetch_rss_feed ─────────────────────────────────────────────────────────
+
+
+@registry.tool(
+    name="fetch_rss_feed",
+    description=(
+        "Fetch the latest items from RSS.app feeds. Use this to monitor "
+        "specific high-quality sources (Twitter accounts, subreddits, tech blogs) "
+        "for new content. Returns items with title, link, published date, and content."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "feed_ids": {
+                "type": "string",
+                "description": "Comma-separated list of RSS.app feed IDs to fetch from.",
+            },
+            "max_items_per_feed": {
+                "type": "integer",
+                "description": "Maximum items to fetch per feed (default: 5).",
+                "default": 5,
+            },
+        },
+        "required": ["feed_ids"],
+    },
+)
+def fetch_rss_feed(feed_ids: str, max_items_per_feed: int = 5) -> List[Dict[str, Any]]:
+    """Fetch latest items from RSS.app feeds."""
+    from providers.rss_app import get_all_feeds_items
+
+    feed_id_list = [fid.strip() for fid in feed_ids.split(",") if fid.strip()]
+    if not feed_id_list:
+        return []
+
+    items = get_all_feeds_items(feed_id_list, max_items_per_feed=max_items_per_feed)
+    return [item.to_dict() for item in items]
 

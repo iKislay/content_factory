@@ -31,11 +31,11 @@ _SCOUT_SYSTEM = """You are a trend analyst for a viral short-form video channel.
 
 Your task: find the top 3 best topics to create a video about RIGHT NOW.
 
-Steps:
-1. Call get_trending_topic to see what's trending (try region="IN" first)
-2. Call web_search with the returned topics to verify they are interesting and have
-   good video potential.
-3. Based on what you find, decide on the 3 best topics.
+IMPORTANT PRIORITY ORDER:
+1. FIRST: Call fetch_rss_feed to get latest items from monitored RSS feeds (if feed IDs are configured)
+2. If RSS feeds are empty or unavailable, THEN call get_trending_topic to see what's trending
+3. Call web_search with potential topics to verify they are interesting and have good video potential
+4. Based on what you find, decide on the 3 best topics
 
 When you have chosen your final topics, respond with ONLY this text:
 TOPIC 1: <the chosen topic 1>
@@ -105,9 +105,33 @@ class TrendScoutAgent(BaseAgent):
         from tools import registry
 
         available_tools = [
+            registry.get("fetch_rss_feed"),
             registry.get("get_trending_topic"),
             registry.get("web_search"),
         ]
+
+        rss_feed_ids = getattr(config, "RSS_APP_FEED_IDS", [])
+        has_rss_feeds = rss_feed_ids and any(fid.strip() for fid in rss_feed_ids if fid.strip())
+
+        if has_rss_feeds and not base_topic:
+            self.log(f"Attempting direct RSS feed fetch first (feeds: {rss_feed_ids})")
+            from providers.rss_app import get_all_feeds_items
+            rss_items = get_all_feeds_items([fid.strip() for fid in rss_feed_ids if fid.strip()], max_items_per_feed=3)
+            if rss_items:
+                self.log(f"RSS feeds returned {len(rss_items)} items — using as primary source")
+                rss_topics = [
+                    {"topic": item.title, "rationale": f"From RSS feed: {item.source or 'monitored source'}"}
+                    for item in rss_items[:3]
+                ]
+                topic = rss_topics[0]["topic"]
+                rationale = rss_topics[0]["rationale"]
+                self._post_selected(run_id, topic, rationale, "rss_feed", "IN", topics=rss_topics)
+                return AgentResult(
+                    success=True,
+                    output={"topic": topic, "rationale": rationale, "topics": rss_topics},
+                    next_agent="research",
+                    reasoning=f"Found {len(rss_topics)} topics via RSS feeds",
+                )
 
         executor = self.make_executor(run_id)
 
@@ -123,7 +147,12 @@ For each angle, provide:
 
 Search for recent news, trends, or developments related to '{base_topic}' to find the most timely and engaging angles."""
             else:
-                user_prompt = "Find the top 3 best topics for a viral short video right now. Search for what's currently trending."
+                rss_feed_ids = getattr(config, "RSS_APP_FEED_IDS", [])
+                rss_instruction = ""
+                if rss_feed_ids and any(rss_feed_ids):
+                    feed_ids_str = ",".join(rss_feed_ids)
+                    rss_instruction = f"\n\nYou have access to RSS feeds. Use fetch_rss_feed with feed_ids='{feed_ids_str}' to get the latest items from your monitored sources first."
+                user_prompt = f"Find the top 3 best topics for a viral short video right now. Search for what's currently trending.{rss_instruction}"
             
             final_text, all_calls, all_results = generate_with_tools(
                 system_prompt=_SCOUT_SYSTEM,

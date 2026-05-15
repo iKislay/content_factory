@@ -54,6 +54,10 @@ CIRCUIT_TIMEOUT_WINDOW_SEC = 60  # time window to track failures (seconds)
 CIRCUIT_COOLDOWN_SEC = 120       # seconds to wait before testing recovery
 CIRCUIT_HALF_OPEN_RETRIES = 2   # test recoveries allowed in half-open state
 
+# RSS.app Configuration
+RSS_APP_API_KEY = os.getenv("RSS_APP_API_KEY", "")
+RSS_APP_FEED_IDS = os.getenv("RSS_APP_FEED_IDS", "").split(",")  # comma-separated feed IDs
+
 # Retry & resilience configuration
 TOOL_MAX_RETRIES = 3         # max retry attempts for failed tool calls
 TOOL_RETRY_BASE_DELAY = 1.0  # base delay in seconds (exponential backoff: 1s, 2s, 4s...)
