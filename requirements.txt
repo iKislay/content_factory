@@ -1,0 +1,8 @@
+groq
+pytrends
+requests
+python-dotenv
+kokoro-onnx
+moviepy
+ffmpeg-python
+tenacity
