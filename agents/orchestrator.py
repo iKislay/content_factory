@@ -390,8 +390,22 @@ class OrchestratorAgent(BaseAgent):
                 # Backward compat: PRODUCTION_SUMMARY not found, use agent result
                 self.state.save_image_paths(run_id, result.output.get("image_paths", []))
                 self.state.save_audio_map(run_id, result.output.get("audio_map", {}))
-            self.state.update_status(run_id, "AUDIO_DONE")
-            return "AUDIO_DONE"
+            
+            auto_approve = ctx.get("auto_approve", False)
+            
+            if auto_approve:
+                self.state.update_status(run_id, "AUDIO_DONE")
+                return "AUDIO_DONE"
+            
+            # Pause for visual style selection
+            scenes = self.state.get_scenes(run_id)
+            self.state.update_status(run_id, "STYLE_AWAITING_APPROVAL")
+            self.post_message(
+                run_id=run_id,
+                msg_type="STYLE_AWAITING_APPROVAL",
+                payload={"scenes": scenes, "topic": ctx.get("topic", "")},
+            )
+            return "STYLE_AWAITING_APPROVAL"
 
         elif agent_name == "publisher":
             final_path = result.output.get("final_path", "")

@@ -112,19 +112,72 @@ export const api = {
     } catch (e) { console.error(e); return []; }
   },
 
-  async deleteAllRuns(): Promise<boolean> {
+async deleteAllRuns(): Promise<boolean> {
     try {
       const res = await fetch(`${API_BASE}/runs`, { method: 'DELETE' });
       return res.ok;
     } catch (e) { console.error(e); return false; }
   },
 
-  async cancelRun(runId: string): Promise<boolean> {
+  async getVisualStyles(): Promise<{id: string; name: string; description: string}[]> {
     try {
-      const res = await fetch(`${API_BASE}/runs/${runId}/cancel`, { method: 'POST' });
+      const res = await fetch(`${API_BASE}/visual-styles`);
+      if (!res.ok) throw new Error('Failed to fetch styles');
+      const data = await res.json();
+      return data.styles;
+    } catch (e) { console.error(e); return []; }
+  },
+
+  async getScenes(runId: string): Promise<any[]> {
+    try {
+      const res = await fetch(`${API_BASE}/runs/${runId}/scenes`);
+      if (!res.ok) return [];
+      const data = await res.json();
+      return data.scenes || [];
+    } catch (e) { console.error(e); return []; }
+  },
+
+  async updateScenes(runId: string, scenes: any[]): Promise<boolean> {
+    try {
+      const res = await fetch(`${API_BASE}/runs/${runId}/scenes`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scenes }),
+      });
       return res.ok;
     } catch (e) { console.error(e); return false; }
   },
+
+  async setVisualStyle(runId: string, style: string): Promise<boolean> {
+    try {
+      const res = await fetch(`${API_BASE}/runs/${runId}/visual-style`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ style }),
+      });
+      return res.ok;
+    } catch (e) { console.error(e); return false; }
+  },
+
+  async regenerateImage(runId: string, sceneId: number): Promise<boolean> {
+    try {
+      const res = await fetch(`${API_BASE}/runs/${runId}/regenerate-image/${sceneId}`, {
+        method: 'POST',
+      });
+      return res.ok;
+    } catch (e) { console.error(e); return false; }
+  },
+
+  async uploadImage(runId: string, sceneId: number, imageData: string): Promise<boolean> {
+    try {
+      const res = await fetch(`${API_BASE}/runs/${runId}/upload-image/${sceneId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image_data: imageData }),
+      });
+      return res.ok;
+    } catch (e) { console.error(e); return false; }
+  }
 };
 
 type MessageHandler = (msg: WebSocketMessage) => void;
