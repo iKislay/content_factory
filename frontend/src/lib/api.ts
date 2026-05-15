@@ -107,5 +107,13 @@ export const api = {
       const res = await fetch(`${API_BASE}/runs`, { method: 'DELETE' });
       return res.ok;
     } catch (e) { console.error(e); return false; }
-  }
+  },
+
+  async cancelRun(runId: string): Promise<boolean> {
+    try {
+      const res = await fetch(`${API_BASE}/runs/${runId}/cancel`, { method: 'POST' });
+      return res.ok;
+    } catch (e) { console.error(e); return false; }
+  },
 };
+

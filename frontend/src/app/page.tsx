@@ -1,10 +1,81 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { api, Run, AgentMessage } from '@/lib/api';
 import AgentGraph from '@/components/AgentGraph';
 import ActivityLog from '@/components/ActivityLog';
 import HumanInTheLoop from '@/components/HumanInTheLoop';
+
+// ─── Shared run polling hook ───────────────────────────────────────────────────
+
+function useRunPolling(runId: string | null) {
+  const [run, setRun] = useState<Run | null>(null);
+  const [messages, setMessages] = useState<AgentMessage[]>([]);
+  const [isWaiting, setIsWaiting] = useState(false);
+  const [topics, setTopics] = useState<{topic: string; rationale: string}[]>([]);
+  const [topicRationale, setTopicRationale] = useState('');
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  const poll = useCallback(async () => {
+    if (!runId) return;
+    try {
+      const [r, m] = await Promise.all([api.getRun(runId), api.getRunMessages(runId)]);
+      if (r) setRun(r);
+      setMessages(m);
+
+      if (r && r.status === 'TOPIC_AWAITING_APPROVAL') {
+        const pendingMsg = m.find(msg => msg.msg_type === 'TOPIC_AWAITING_APPROVAL');
+        const alreadyResponded = m.some(msg => msg.msg_type === 'USER_INPUT');
+        if (pendingMsg && !alreadyResponded) {
+          const payload = pendingMsg.payload;
+          if (payload.topics) setTopics(payload.topics);
+          else if (payload.topic) setTopics([{topic: payload.topic, rationale: payload.rationale || ''}]);
+          setTopicRationale(payload.rationale || '');
+          setIsWaiting(true);
+        } else {
+          setIsWaiting(false);
+        }
+      } else {
+        setIsWaiting(false);
+      }
+    } catch (e) {
+      console.error('poll error', e);
+    }
+  }, [runId]);
+
+  // Start polling immediately when runId is set; stop when done/failed/cancelled
+  useEffect(() => {
+    if (!runId) return;
+    // Reset state for new runId
+    setRun(null);
+    setMessages([]);
+    setIsWaiting(false);
+    setTopics([]);
+    setTopicRationale('');
+
+    poll(); // immediate first fetch
+
+    intervalRef.current = setInterval(async () => {
+      // Read latest run state to decide whether to keep polling
+      const r = await api.getRun(runId);
+      if (!r) return;
+      setRun(r);
+      if (r.status === 'DONE' || r.status === 'FAILED' || r.status === 'CANCELLED') {
+        // Do one final full poll then stop
+        const m = await api.getRunMessages(runId);
+        setMessages(m);
+        setIsWaiting(false);
+        if (intervalRef.current) clearInterval(intervalRef.current);
+        return;
+      }
+      poll();
+    }, 2500);
+
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+  }, [runId, poll]);
+
+  return { run, messages, isWaiting, topics, topicRationale, poll };
+}
 
 // ─── Status helpers ───────────────────────────────────────────────────────────
 
@@ -311,19 +382,28 @@ function HistoryView({ onViewRun, onDeleteAll, onDeleted, stats }: { onViewRun: 
 // ─── Run Detail View ──────────────────────────────────────────────────────────
 
 function RunDetailView({ runId, onBack }: { runId: string; onBack: () => void }) {
-  const [run, setRun] = useState<Run | null>(null);
-  const [messages, setMessages] = useState<AgentMessage[]>([]);
+  const { run, messages, isWaiting, topics, topicRationale, poll } = useRunPolling(runId);
 
-  useEffect(() => {
-    const fetch = async () => {
-      const [r, m] = await Promise.all([api.getRun(runId), api.getRunMessages(runId)]);
-      setRun(r);
-      setMessages(m);
-    };
-    fetch();
-  }, [runId]);
+  const handleApprove = async (selectedTopic: string, autoApprove?: boolean) => {
+    if (selectedTopic === '') {
+      await api.approveStep(runId, 'approve', undefined, autoApprove);
+    } else {
+      await api.approveStep(runId, 'approve', selectedTopic, autoApprove);
+    }
+    setTimeout(poll, 800);
+  };
 
-  if (!run) return <div style={{ padding: 32, color: 'var(--muted)' }}>Loading run details…</div>;
+  const handleReject = async () => {
+    await api.approveStep(runId, 'reject', '');
+    setTimeout(poll, 800);
+  };
+
+  if (!run) return (
+    <div style={{ padding: 48, textAlign: 'center' }}>
+      <div className="skeleton" style={{ width: 200, height: 24, margin: '0 auto 16px' }} />
+      <div className="skeleton" style={{ width: 320, height: 16, margin: '0 auto' }} />
+    </div>
+  );
 
   return (
     <div>
@@ -331,11 +411,11 @@ function RunDetailView({ runId, onBack }: { runId: string; onBack: () => void })
       <ActiveRunView
         run={run}
         messages={messages}
-        isWaitingForUser={false}
-        topics={[]}
-        rationale=""
-        onApprove={() => {}}
-        onReject={() => {}}
+        isWaitingForUser={isWaiting}
+        topics={topics}
+        rationale={topicRationale}
+        onApprove={handleApprove}
+        onReject={handleReject}
       />
     </div>
   );
@@ -466,80 +546,103 @@ function GeneratorView({ onStartRun }: { onStartRun: (id: string) => void }) {
   );
 }
 
+// ─── URL hash routing helpers ─────────────────────────────────────────────────
+
+type AppView = 'home' | 'run' | 'history' | 'run_detail';
+
+function encodeHash(view: AppView, runId?: string | null): string {
+  if (view === 'run' && runId) return `#run/${runId}`;
+  if (view === 'run_detail' && runId) return `#history/${runId}`;
+  if (view === 'history') return '#history';
+  return '#home';
+}
+
+function decodeHash(hash: string): { view: AppView; runId: string | null } {
+  if (hash.startsWith('#run/')) return { view: 'run', runId: hash.slice(5) };
+  if (hash.startsWith('#history/')) return { view: 'run_detail', runId: hash.slice(9) };
+  if (hash === '#history') return { view: 'history', runId: null };
+  return { view: 'home', runId: null };
+}
+
 // ─── Root App ─────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const [view, setView] = useState<'home' | 'run' | 'history' | 'run_detail'>('home');
+  const [view, setView] = useState<AppView>('home');
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [historyRunId, setHistoryRunId] = useState<string | null>(null);
-
-  const [run, setRun] = useState<Run | null>(null);
-  const [messages, setMessages] = useState<AgentMessage[]>([]);
-  const [isWaiting, setIsWaiting] = useState(false);
-  const [topics, setTopics] = useState<{topic: string, rationale: string}[]>([]);
-  const [topicRationale, setTopicRationale] = useState('');
   const [stats, setStats] = useState<{total_runs: number; completed_runs: number; success_rate: number}>({ total_runs: 0, completed_runs: 0, success_rate: 0 });
+
+  // Use the shared polling hook for the active run
+  const { run, messages, isWaiting, topics, topicRationale, poll } = useRunPolling(activeRunId);
+
+  // ── URL hash routing ────────────────────────────────────────────────────────
+
+  // On mount: restore state from hash (survives page refresh)
+  useEffect(() => {
+    const { view: v, runId } = decodeHash(window.location.hash || '#home');
+    if (v === 'run' && runId) {
+      setActiveRunId(runId);
+      setView('run');
+    } else if (v === 'run_detail' && runId) {
+      setHistoryRunId(runId);
+      setView('run_detail');
+    } else if (v === 'history') {
+      setView('history');
+    } else {
+      setView('home');
+    }
+  }, []);
+
+  // Listen for browser back/forward navigation
+  useEffect(() => {
+    const onHashChange = () => {
+      const { view: v, runId } = decodeHash(window.location.hash);
+      if (v === 'run' && runId) { setActiveRunId(runId); setView('run'); }
+      else if (v === 'run_detail' && runId) { setHistoryRunId(runId); setView('run_detail'); }
+      else if (v === 'history') { setView('history'); }
+      else { setView('home'); }
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  // Keep hash in sync with state changes
+  useEffect(() => {
+    const hash = encodeHash(
+      view,
+      view === 'run' ? activeRunId : view === 'run_detail' ? historyRunId : null
+    );
+    if (window.location.hash !== hash) window.location.hash = hash;
+  }, [view, activeRunId, historyRunId]);
+
+  // ── Stats ────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     api.getStats().then(s => setStats(s));
   }, []);
 
-  // Poll the active run
-  const poll = useCallback(async () => {
-    if (!activeRunId) return;
-    const [r, m] = await Promise.all([api.getRun(activeRunId), api.getRunMessages(activeRunId)]);
-    if (r) setRun(r);
-    setMessages(m);
-
-    // Human-in-the-loop: check if waiting for topic approval
-    if (r && r.status === 'TOPIC_AWAITING_APPROVAL') {
-      const pendingMsg = m.find(msg => msg.msg_type === 'TOPIC_AWAITING_APPROVAL');
-      const alreadyResponded = m.some(msg => msg.msg_type === 'USER_INPUT');
-      if (pendingMsg && !alreadyResponded) {
-        const payload = pendingMsg.payload;
-        if (payload.topics) {
-          setTopics(payload.topics);
-        } else if (payload.topic) {
-          setTopics([{topic: payload.topic, rationale: payload.rationale || ''}]);
-        }
-        setTopicRationale(payload.rationale || '');
-        setIsWaiting(true);
-      }
-    } else {
-      setIsWaiting(false);
-    }
-  }, [activeRunId]);
-
-  useEffect(() => {
-    if (!activeRunId || !run) return;
-    if (run.status === 'DONE' || run.status === 'FAILED') return;
-    const interval = setInterval(poll, 2500);
-    return () => clearInterval(interval);
-  }, [activeRunId, run, poll]);
+  // ── Navigation helpers ───────────────────────────────────────────────────────
 
   const handleStartRun = (id: string) => {
     setActiveRunId(id);
     setView('run');
-    setTimeout(poll, 500);
   };
 
   const handleApprove = async (selectedTopic: string, autoApprove?: boolean) => {
     if (activeRunId) {
       if (selectedTopic === '') {
-        // Let AI decide - use undefined so backend uses existing topic
         await api.approveStep(activeRunId, 'approve', undefined, autoApprove);
       } else {
         await api.approveStep(activeRunId, 'approve', selectedTopic, autoApprove);
       }
-      setIsWaiting(false);
+      setTimeout(poll, 800);
     }
   };
 
   const handleReject = async () => {
     if (activeRunId) {
       await api.approveStep(activeRunId, 'reject', '');
-      // Poll again to get the new topic
-      setTimeout(poll, 1000);
+      setTimeout(poll, 800);
     }
   };
 
@@ -548,14 +651,18 @@ export default function App() {
     setView('run_detail');
   };
 
+  const navigateTo = (v: string) => {
+    if (v === 'home') setView('home');
+    else if (v === 'history') setView('history');
+  };
+
+  // ── Render ───────────────────────────────────────────────────────────────────
+
   return (
     <>
       <Nav
         view={view === 'history' || view === 'run_detail' ? 'history' : 'home'}
-        onView={v => {
-          if (v === 'home') setView('home');
-          else if (v === 'history') setView('history');
-        }}
+        onView={navigateTo}
       />
 
       <div className="container" style={{ paddingTop: 'var(--spacing-xxl)', paddingBottom: 'var(--spacing-xxl)' }}>
@@ -576,13 +683,21 @@ export default function App() {
         )}
 
         {view === 'run' && !run && (
-          <div style={{ textAlign: 'center', padding: 64, color: 'var(--muted)' }}>
-            <p>Starting pipeline…</p>
+          <div style={{ textAlign: 'center', padding: 64 }}>
+            <div className="skeleton" style={{ width: 280, height: 28, margin: '0 auto 20px', borderRadius: 8 }} />
+            <div className="skeleton" style={{ width: 180, height: 16, margin: '0 auto 12px', borderRadius: 6 }} />
+            <div className="skeleton" style={{ width: 320, height: 8, margin: '0 auto', borderRadius: 4 }} />
+            <p className="body-sm" style={{ color: 'var(--muted)', marginTop: 24 }}>Initialising pipeline — this may take a moment…</p>
           </div>
         )}
 
         {view === 'history' && (
-          <HistoryView onViewRun={handleViewHistoryRun} onDeleteAll={api.deleteAllRuns} onDeleted={() => setView('home')} stats={stats} />
+          <HistoryView
+            onViewRun={handleViewHistoryRun}
+            onDeleteAll={api.deleteAllRuns}
+            onDeleted={() => setView('home')}
+            stats={stats}
+          />
         )}
 
         {view === 'run_detail' && historyRunId && (
