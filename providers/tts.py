@@ -77,9 +77,13 @@ def synthesize_speech(text: str, output_path: str, voice_name: str = "en-US-Stan
         with open(output_path, "wb") as out:
             out.write(audio_content)
             
-        logger.info(f"[TTS] Audio content written to file: {output_path}")
-        return True
+        import soundfile as sf
+        data, samplerate = sf.read(output_path)
+        duration = len(data) / samplerate
+            
+        logger.info(f"[TTS] Audio content written to file: {output_path} ({duration:.2f}s)")
+        return duration
         
     except Exception as e:
         logger.error(f"[TTS] Failed to synthesize speech: {e}")
-        return False
+        return None

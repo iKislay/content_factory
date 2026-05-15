@@ -235,11 +235,15 @@ class ProductionAgent(BaseAgent):
         self, run_id: str, scenes: List[dict]
     ) -> Dict[int, dict]:
         """Fan out audio generation for all scenes."""
-        self.log(f"Loading Kokoro TTS model...")
-        kokoro = self._load_kokoro()
+        from modules.voice import _load_kokoro
+        
+        kokoro = None
+        if config.TTS_PROVIDER == "kokoro":
+            self.log("Loading Kokoro TTS model...")
+            kokoro = _load_kokoro()
 
         self.log(
-            f"Submitting {len(scenes)} audio tasks "
+            f"Submitting {len(scenes)} audio tasks via {config.TTS_PROVIDER} "
             f"(workers={config.MAX_PRODUCTION_WORKERS})..."
         )
         audio_map: Dict[int, dict] = {}
@@ -282,23 +286,11 @@ class ProductionAgent(BaseAgent):
 
         return audio_map
 
-    def _load_kokoro(self):
-        """Load Kokoro TTS model — fails fast with a clear error."""
-        try:
-            from kokoro_onnx import Kokoro
-            return Kokoro.from_pretrained()
-        except ImportError:
-            raise RuntimeError(
-                "Kokoro TTS not installed. Run: pip install kokoro-onnx soundfile"
-            )
-        except Exception as e:
-            raise RuntimeError(f"Failed to load Kokoro model: {e}")
-
     def _generate_single_audio(self, scene: dict, kokoro, run_id: str) -> Dict[str, Any]:
         """Generate audio for a single scene (runs in thread)."""
         import uuid as _uuid
-        import soundfile as sf
         from tools.executor import ToolCall, ToolResult
+        from modules.voice import synthesize_scene_audio
 
         scene_id = scene["scene_id"]
         narration = scene["narration"]
@@ -310,25 +302,24 @@ class ProductionAgent(BaseAgent):
             payload={
                 "agent": self.name,
                 "tool_name": "synthesize_tts",
-                "arguments": {"scene_id": scene_id, "text_preview": narration[:60]},
+                "arguments": {"scene_id": scene_id, "text_preview": narration[:60], "provider": config.TTS_PROVIDER},
                 "call_id": call_id,
             },
         )
 
         t0 = time.monotonic()
-        voice_style = kokoro.get_voice_style(config.KOKORO_VOICE)
-        audio, _ = kokoro.create(
-            text=narration,
-            voice=voice_style,
-            speed=1.0,
-            lang="en-us",
-        )
-
         output_path = os.path.join(
             config.TEMP_DIR, f"audio_scene_{scene_id}.wav"
         )
-        sf.write(output_path, audio, config.KOKORO_SAMPLE_RATE)
-        duration = round(len(audio) / config.KOKORO_SAMPLE_RATE, 3)
+        
+        audio_info = synthesize_scene_audio(
+            text=narration,
+            output_path=output_path,
+            scene_id=scene_id,
+            kokoro_model=kokoro
+        )
+        
+        duration = audio_info["duration"]
         duration_ms = round((time.monotonic() - t0) * 1000, 1)
 
         self.post_message(
@@ -344,4 +335,4 @@ class ProductionAgent(BaseAgent):
             },
         )
 
-        return {"path": output_path, "duration": duration}
+        return audio_info

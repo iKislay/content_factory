@@ -10,6 +10,7 @@ OLLAMA_BASE_URL = "http://localhost:11434"
 OLLAMA_MODEL = "llama3.2"
 
 # Google Cloud TTS Configuration
+TTS_PROVIDER = os.getenv("TTS_PROVIDER", "google")  # "google" or "kokoro"
 GOOGLE_CLOUD_TTS_API_KEY = os.getenv("GOOGLE_CLOUD_TTS_API_KEY", "")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 
