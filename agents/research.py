@@ -37,6 +37,7 @@ import config
 from agents.base import AgentResult, BaseAgent
 from providers.llm import generate_with_tools
 from providers.research_quality import score_research
+from tools.executor import ToolCall
 
 
 _RESEARCH_SYSTEM = """You are a research analyst for a viral short-form video content team.
@@ -203,7 +204,12 @@ class ResearchAgent(BaseAgent):
             )
             return self._parse_brief(final_text), all_calls, all_results
         except Exception as e:
-            self.log(f"Research pass failed: {e} — using LLM-only fallback")
+            self.log(f"Research pass failed: {e} — trying direct live-tools fallback")
+            brief, calls, results = self._direct_live_tools_fallback(topic, executor)
+            if calls or results:
+                return brief, calls, results
+
+            self.log("Direct live-tools fallback yielded no data — using LLM-only fallback")
             brief = self._llm_only_research(topic)
             return brief, [], []
 
@@ -235,6 +241,122 @@ class ResearchAgent(BaseAgent):
             return dict(_MINIMAL_FALLBACK), [], []
 
     # ── Artifact extraction ───────────────────────────────────────────────────
+
+    def _direct_live_tools_fallback(
+        self, topic: str, executor: Any
+    ) -> tuple[Dict[str, Any], list, list]:
+        """
+        Run a deterministic, non-LLM research pass using core tools.
+
+        This keeps research grounded in live sources when the LLM tool loop
+        itself fails (provider outage, malformed function-calling response, etc).
+        """
+        calls: list = []
+        results: list = []
+
+        planned_calls = [
+            ToolCall(tool_name="search_wikipedia", arguments={"topic": topic}),
+            ToolCall(tool_name="search_news", arguments={"topic": topic, "max_results": 5}),
+            ToolCall(
+                tool_name="web_search",
+                arguments={"query": f"{topic} statistics latest", "max_results": 6},
+            ),
+        ]
+
+        for call in planned_calls:
+            calls.append(call)
+            results.append(executor.execute(call))
+
+        return self._brief_from_tool_results(topic, results), calls, results
+
+    def _brief_from_tool_results(self, topic: str, results: list) -> Dict[str, Any]:
+        """Build a compact research brief directly from tool outputs."""
+        facts: List[str] = []
+        stats: List[str] = []
+        angles: List[str] = []
+        headline = ""
+
+        for result in results:
+            if not result.is_ok() or result.output is None:
+                continue
+
+            output = result.output
+
+            if result.tool_name == "search_wikipedia" and isinstance(output, dict):
+                title = str(output.get("title") or topic).strip()
+                extract = str(output.get("extract") or "").strip()
+                key_facts = output.get("key_facts") or []
+
+                for item in key_facts:
+                    if isinstance(item, str):
+                        cleaned = item.strip()
+                        if cleaned:
+                            facts.append(cleaned)
+
+                if extract:
+                    facts.append(f"{title}: {extract[:220]}")
+
+            elif result.tool_name == "search_news" and isinstance(output, list):
+                for item in output:
+                    if not isinstance(item, dict):
+                        continue
+                    title = str(item.get("title") or "").strip()
+                    source = str(item.get("source") or "").strip()
+                    if title:
+                        if not headline:
+                            headline = title
+                        facts.append(f"Recent news ({source or 'unknown source'}): {title}")
+                        break
+
+            elif result.tool_name == "web_search" and isinstance(output, list):
+                for item in output:
+                    if not isinstance(item, dict):
+                        continue
+                    title = str(item.get("title") or "").strip()
+                    snippet = str(item.get("snippet") or "").strip()
+                    combined = f"{title} {snippet}".strip()
+                    if not combined:
+                        continue
+                    if re.search(r"\b\d[\d,\.]*\b", combined):
+                        stats.append(combined[:220])
+                    else:
+                        angles.append(combined[:220])
+
+        facts = self._dedupe_nonempty(facts, 6)
+        stats = self._dedupe_nonempty(stats, 4)
+        angles = self._dedupe_nonempty(angles, 3)
+
+        if not facts and not stats and not angles:
+            return dict(_MINIMAL_FALLBACK)
+
+        return {
+            "facts": facts or list(_MINIMAL_FALLBACK["facts"]),
+            "stats": stats or list(_MINIMAL_FALLBACK["stats"]),
+            "angles": angles or list(_MINIMAL_FALLBACK["angles"]),
+            "key_insight": (
+                facts[0]
+                if facts
+                else stats[0] if stats else _MINIMAL_FALLBACK["key_insight"]
+            ),
+            "news_headline": headline,
+        }
+
+    def _dedupe_nonempty(self, items: List[str], max_items: int) -> List[str]:
+        """Return unique non-empty strings in-order, capped to max_items."""
+        seen = set()
+        merged: List[str] = []
+        for item in items:
+            cleaned = item.strip()
+            if not cleaned:
+                continue
+            norm = cleaned.lower()
+            if norm in seen:
+                continue
+            seen.add(norm)
+            merged.append(cleaned)
+            if len(merged) >= max_items:
+                break
+        return merged
 
     def _extract_live_artifacts(
         self, results: list
