@@ -9,8 +9,10 @@ The Orchestrator is responsible for:
   4. Reflection:       Logging each agent's reasoning before proceeding
   5. Revision Loop:    Managing the Narrator ↔ Critic feedback cycle
   6. Failure Handling: Retry with exponential backoff; graceful degradation
+  7. Progress Logging: Reading PRODUCTION_PROGRESS + PRODUCTION_SUMMARY
+                       to surface fan-out timing stats in real time (Task 5)
 
-Full pipeline (Task 2):
+Full pipeline (Task 2+):
   TrendScout → Research → Planner → Narrator → Critic → Production → Publisher
                                         ↑_______________|
                                           revision loop
@@ -228,8 +230,17 @@ class OrchestratorAgent(BaseAgent):
                 return "PLANNED"
 
         elif agent_name == "production":
-            self.state.save_image_paths(run_id, result.output.get("image_paths", []))
-            self.state.save_audio_map(run_id, result.output.get("audio_map", {}))
+            # Read from PRODUCTION_SUMMARY (Task 5) with backward-compat fallback
+            summary_msg = self.state.get_latest_message(run_id, "PRODUCTION_SUMMARY")
+            if summary_msg:
+                payload = summary_msg["payload"]
+                self._log_production_summary(payload)
+                self.state.save_image_paths(run_id, payload.get("image_paths", []))
+                self.state.save_audio_map(run_id, payload.get("audio_map", {}))
+            else:
+                # Backward compat: PRODUCTION_SUMMARY not found, use agent result
+                self.state.save_image_paths(run_id, result.output.get("image_paths", []))
+                self.state.save_audio_map(run_id, result.output.get("audio_map", {}))
             self.state.update_status(run_id, "AUDIO_DONE")
             return "AUDIO_DONE"
 
@@ -347,3 +358,43 @@ class OrchestratorAgent(BaseAgent):
         )
         conn.commit()
         conn.close()
+
+    def _log_production_summary(self, payload: dict) -> None:
+        """
+        Log a human-readable summary of the production fan-out.
+
+        Surfaces the key Task 5 metrics — wall time, concurrency proof
+        (image/audio tasks completing in interleaved order), fastest and
+        slowest task details.
+        """
+        total = payload.get("total_tasks", 0)
+        done = payload.get("completed_tasks", 0)
+        failed = payload.get("failed_tasks", 0)
+        wall_ms = payload.get("wall_time_ms", 0.0)
+        fastest = payload.get("fastest_task") or {}
+        slowest = payload.get("slowest_task") or {}
+
+        self.log(
+            f"[PRODUCTION SUMMARY] "
+            f"{done}/{total} tasks complete, {failed} failed | "
+            f"wall={wall_ms:.0f}ms"
+        )
+        if fastest:
+            self.log(
+                f"  Fastest: {fastest.get('task_id')} "
+                f"({fastest.get('duration_ms', 0):.0f}ms) | "
+                f"Slowest: {slowest.get('task_id')} "
+                f"({slowest.get('duration_ms', 0):.0f}ms)"
+            )
+
+        # Log task_details to show image/audio interleaving (concurrency proof)
+        details = payload.get("task_details", [])
+        if details:
+            self.log("  Task timeline (sorted by task_id):")
+            for t in sorted(details, key=lambda x: x.get("duration_ms", 0)):
+                status_icon = "✓" if t["status"] == "DONE" else "✗"
+                self.log(
+                    f"    {status_icon} {t['task_id']:<10} "
+                    f"{t.get('duration_ms', 0):>7.0f}ms "
+                    f"[{t['asset_type']}]"
+                )

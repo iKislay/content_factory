@@ -34,7 +34,8 @@ TEMP_DIR = "temp"
 DB_PATH = "state.db"
 
 # Agent configuration
-MAX_PRODUCTION_WORKERS = 3   # concurrent threads for image + audio fan-out
+MAX_PRODUCTION_WORKERS = 10  # unified concurrent workers for image+audio fan-out (Task 5)
+PRODUCTION_FANOUT_TIMEOUT_SEC = 300  # hard deadline for full production fan-out
 AGENT_LOG_LEVEL = "INFO"     # structured agent logging level
 
 # Reasoning & quality control
