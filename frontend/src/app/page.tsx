@@ -221,6 +221,7 @@ function ActiveRunView({
   rationale,
   onApprove,
   onReject,
+  onCancel,
 }: {
   run: Run;
   messages: AgentMessage[];
@@ -229,9 +230,11 @@ function ActiveRunView({
   rationale?: string;
   onApprove: (t: string, auto?: boolean) => void;
   onReject: () => void;
+  onCancel?: () => void;
 }) {
   const pct = statusProgress(run.status);
   const isDone = run.status === 'DONE';
+  const isTerminal = run.status === 'DONE' || run.status === 'FAILED' || run.status === 'CANCELLED';
 
   // Compute images count from production progress messages
   const imageDoneMsgs = messages.filter(m => m.msg_type === 'PRODUCTION_PROGRESS' && m.payload?.asset_type === 'image' && m.payload?.status === 'DONE');
@@ -244,7 +247,18 @@ function ActiveRunView({
           <h2 className="display-sm" style={{ marginBottom: 4 }}>{run.topic}</h2>
           <p className="body-sm" style={{ color: 'var(--muted)' }}>Run ID: {run.run_id.substring(0, 8)} · {run.time_ago || 'just now'}</p>
         </div>
-        {statusBadge(run.status)}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {!isTerminal && onCancel && (
+            <button
+              className="btn-ghost"
+              style={{ color: 'var(--error)', fontSize: 13 }}
+              onClick={() => { if (confirm('Cancel this pipeline run?')) onCancel(); }}
+            >
+              ✕ Cancel Run
+            </button>
+          )}
+          {statusBadge(run.status)}
+        </div>
       </div>
 
       {/* Progress bar */}
@@ -398,6 +412,11 @@ function RunDetailView({ runId, onBack }: { runId: string; onBack: () => void })
     setTimeout(poll, 800);
   };
 
+  const handleCancel = async () => {
+    await api.cancelRun(runId);
+    setTimeout(poll, 600);
+  };
+
   if (!run) return (
     <div style={{ padding: 48, textAlign: 'center' }}>
       <div className="skeleton" style={{ width: 200, height: 24, margin: '0 auto 16px' }} />
@@ -416,6 +435,7 @@ function RunDetailView({ runId, onBack }: { runId: string; onBack: () => void })
         rationale={topicRationale}
         onApprove={handleApprove}
         onReject={handleReject}
+        onCancel={handleCancel}
       />
     </div>
   );
@@ -651,6 +671,13 @@ export default function App() {
     setView('run_detail');
   };
 
+  const handleCancel = async () => {
+    if (activeRunId) {
+      await api.cancelRun(activeRunId);
+      setTimeout(poll, 600);
+    }
+  };
+
   const navigateTo = (v: string) => {
     if (v === 'home') setView('home');
     else if (v === 'history') setView('history');
@@ -679,6 +706,7 @@ export default function App() {
             rationale={topicRationale}
             onApprove={handleApprove}
             onReject={handleReject}
+            onCancel={handleCancel}
           />
         )}
 

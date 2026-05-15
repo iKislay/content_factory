@@ -10,6 +10,9 @@ export interface Run {
   image_paths?: string[];
   audio_map?: any;
   scenes?: Scene[];
+  time_ago?: string;
+  is_running?: boolean;
+  status_label?: string;
 }
 
 export interface Scene {
