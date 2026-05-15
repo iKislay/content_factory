@@ -23,7 +23,9 @@ Scoring rubric (each dimension 1-10):
 Decision rules:
   overall_score >= CRITIC_MIN_SCORE → APPROVE
   overall_score <  CRITIC_MIN_SCORE → REVISE (if revision_count < MAX_REVISION_CYCLES)
-  revision_count >= MAX_REVISION_CYCLES → force APPROVE (demo reliability > perfection)
+  revision_count >= MAX_REVISION_CYCLES:
+    - if grounded: allow force APPROVE (demo reliability fallback)
+    - if ungrounded: REJECT (do not ship hallucinated content)
 
 Blackboard messages consumed:
   NARRATIVE_DRAFT  { scenes, attempt, grounding }
