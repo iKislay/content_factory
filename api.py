@@ -336,6 +336,7 @@ def parse_json(json_str: str) -> Optional[Any]:
 class RunRequest(BaseModel):
     topic: str
     auto_approve: bool = False
+    persona: Optional[str] = "The Analyst"
 
 @app.get("/api/runs")
 def get_all_runs():
@@ -525,14 +526,19 @@ def run_pipeline_task(run_id: str, auto_approve: bool):
 def start_run(req: RunRequest, background_tasks: BackgroundTasks):
     state = PipelineState()
     state.init_db()
-    run_id = state.create_run(req.topic)
+    run_id = state.create_run(req.topic, req.persona)
     
     # Run in background
     thread = threading.Thread(target=run_pipeline_task, args=(run_id, req.auto_approve))
     thread.daemon = True
     thread.start()
     
-    return {"run_id": run_id, "status": "PENDING", "topic": req.topic}
+    return {"run_id": run_id, "status": "PENDING", "topic": req.topic, "persona": req.persona}
+
+@app.get("/api/personas")
+def get_personas():
+    from modules.personas import PERSONAS
+    return {"personas": list(PERSONAS.values())}
 
 # Endpoints for human-in-the-loop interactions
 

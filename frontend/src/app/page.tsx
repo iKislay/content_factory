@@ -5,6 +5,8 @@ import { api, ws, Run, AgentMessage, WebSocketMessage } from '@/lib/api';
 import AgentGraph from '@/components/AgentGraph';
 import ActivityLog from '@/components/ActivityLog';
 import HumanInTheLoop from '@/components/HumanInTheLoop';
+import ScriptReview from '@/components/ScriptReview';
+import VisualStyleSelector from '@/components/VisualStyleSelector';
 
 // ─── Live status display hook for WebSocket messages ───────────────────────────
 
@@ -58,6 +60,8 @@ function useRunPolling(runId: string | null) {
   const [isWaiting, setIsWaiting] = useState(false);
   const [topics, setTopics] = useState<{topic: string; rationale: string}[]>([]);
   const [topicRationale, setTopicRationale] = useState('');
+  const [scriptScenes, setScriptScenes] = useState<{scene_id: number; narration: string; visual_prompt: string}[]>([]);
+  const [visualStyles, setVisualStyles] = useState<{id: string; name: string; description: string}[]>([]);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const liveStatus = useLiveStatus(runId);
 
@@ -76,6 +80,25 @@ function useRunPolling(runId: string | null) {
           if (payload.topics) setTopics(payload.topics);
           else if (payload.topic) setTopics([{topic: payload.topic, rationale: payload.rationale || ''}]);
           setTopicRationale(payload.rationale || '');
+          setIsWaiting(true);
+        } else {
+          setIsWaiting(false);
+        }
+      } else if (r && r.status === 'SCRIPT_AWAITING_APPROVAL') {
+        const pendingMsg = m.find(msg => msg.msg_type === 'SCRIPT_AWAITING_APPROVAL');
+        const alreadyResponded = m.some(msg => msg.msg_type === 'USER_INPUT');
+        if (pendingMsg && !alreadyResponded) {
+          setScriptScenes(pendingMsg.payload.scenes || []);
+          setIsWaiting(true);
+        } else {
+          setIsWaiting(false);
+        }
+      } else if (r && r.status === 'STYLE_AWAITING_APPROVAL') {
+        const pendingMsg = m.find(msg => msg.msg_type === 'STYLE_AWAITING_APPROVAL');
+        const alreadyResponded = m.some(msg => msg.msg_type === 'USER_INPUT');
+        if (pendingMsg && !alreadyResponded) {
+          const styles = await api.getVisualStyles();
+          setVisualStyles(styles);
           setIsWaiting(true);
         } else {
           setIsWaiting(false);
@@ -264,6 +287,8 @@ function ActiveRunView({
   isWaitingForUser,
   topics,
   rationale,
+  scriptScenes,
+  visualStyles,
   onApprove,
   onReject,
   onCancel,
@@ -274,6 +299,8 @@ function ActiveRunView({
   isWaitingForUser: boolean;
   topics: {topic: string, rationale: string}[];
   rationale?: string;
+  scriptScenes?: {scene_id: number; narration: string; visual_prompt: string}[];
+  visualStyles?: {id: string; name: string; description: string}[];
   onApprove: (t: string, auto?: boolean) => void;
   onReject: () => void;
   onCancel?: () => void;

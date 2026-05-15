@@ -40,18 +40,22 @@ class PipelineState:
                 FOREIGN KEY (run_id) REFERENCES pipeline_runs(run_id)
             )
         """)
+        try:
+            cursor.execute("ALTER TABLE pipeline_runs ADD COLUMN persona TEXT DEFAULT 'The Analyst'")
+        except sqlite3.OperationalError:
+            pass
         conn.commit()
         conn.close()
 
-    def create_run(self, topic: str) -> str:
+    def create_run(self, topic: str, persona: str = "The Analyst") -> str:
         """Insert a new run, returns run_id (uuid4)."""
         run_id = str(uuid.uuid4())
         now = datetime.now().isoformat()
         conn = sqlite3.connect(config.DB_PATH)
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO pipeline_runs (run_id, topic, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-            (run_id, topic, "PENDING", now, now)
+            "INSERT INTO pipeline_runs (run_id, topic, persona, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (run_id, topic, persona, "PENDING", now, now)
         )
         conn.commit()
         conn.close()
@@ -79,6 +83,16 @@ class PipelineState:
         row = cursor.fetchone()
         conn.close()
         return row[0] if row else "PENDING"
+
+    def get_run_persona(self, run_id: str) -> str:
+        """Get the persona for a run."""
+        conn = sqlite3.connect(config.DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT persona FROM pipeline_runs WHERE run_id = ?", (run_id,))
+        row = cursor.fetchone()
+        conn.close()
+        # Fallback if DB doesn't have it or row[0] is None
+        return row[0] if row and row[0] else "The Analyst"
 
     def update_status(self, run_id: str, status: str) -> None:
         """Update run status."""

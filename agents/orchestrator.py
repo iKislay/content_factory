@@ -124,11 +124,13 @@ class OrchestratorAgent(BaseAgent):
         self._declare_plan(run_id, is_resume, topic)
 
         status = self.state.get_run_status(run_id)
+        persona = self.state.get_run_persona(run_id)
         ctx: Dict[str, Any] = {
             "topic": topic,
             "revision_count": 0,
             "revision_feedback": "",
             "auto_approve": auto_approve,
+            "persona": persona,
         }
 
         while True:
