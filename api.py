@@ -230,11 +230,17 @@ class ApprovalRequest(BaseModel):
     action: str  # "approve" or "reject"
     feedback: Optional[str] = None
     selected_topic: Optional[str] = None
+    auto_approve: Optional[bool] = None
 
 @app.post("/api/runs/{run_id}/approve")
 def approve_step(run_id: str, req: ApprovalRequest):
     conn = get_db_connection()
-    payload = json.dumps({"action": req.action, "feedback": req.feedback, "selected_topic": req.selected_topic})
+    payload = json.dumps({
+        "action": req.action, 
+        "feedback": req.feedback, 
+        "selected_topic": req.selected_topic,
+        "auto_approve": req.auto_approve
+    })
     
     conn.execute(
         "INSERT INTO agent_messages (run_id, msg_type, sender, recipient, payload_json) VALUES (?, ?, ?, ?, ?)",

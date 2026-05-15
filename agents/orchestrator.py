@@ -136,6 +136,12 @@ class OrchestratorAgent(BaseAgent):
                     self.log("Topic rejected by user — re-running TrendScout")
                     status = "PENDING"
                     continue
+                
+                # Check for auto_approve toggle in user input
+                if user_input.get("auto_approve") is True:
+                    self.log("Auto-approve enabled mid-run by user")
+                    ctx["auto_approve"] = True
+
                 selected_topic = user_input.get("selected_topic")
                 if selected_topic:
                     ctx["topic"] = selected_topic
@@ -223,6 +229,7 @@ class OrchestratorAgent(BaseAgent):
         """
         if agent_name == "trend_scout":
             topic = result.output.get("topic", "")
+            topics = result.output.get("topics", [{"topic": topic, "rationale": result.output.get("rationale", "")}])
             self._update_topic(run_id, topic)
             ctx["topic"] = topic
             auto_approve = ctx.get("auto_approve", False)
@@ -231,7 +238,11 @@ class OrchestratorAgent(BaseAgent):
                 self.post_message(
                     run_id=run_id,
                     msg_type="TOPIC_AWAITING_APPROVAL",
-                    payload={"topic": topic, "rationale": result.output.get("rationale", "")},
+                    payload={
+                        "topic": topic, 
+                        "topics": topics,
+                        "rationale": result.output.get("rationale", "")
+                    },
                 )
                 return "TOPIC_AWAITING_APPROVAL"
             self.post_message(

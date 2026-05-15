@@ -82,12 +82,12 @@ export const api = {
     } catch (e) { console.error(e); return null; }
   },
 
-  async approveStep(runId: string, action: 'approve' | 'reject', selectedTopic?: string): Promise<boolean> {
+  async approveStep(runId: string, action: 'approve' | 'reject', selectedTopic?: string, autoApprove?: boolean): Promise<boolean> {
     try {
       const res = await fetch(`${API_BASE}/runs/${runId}/approve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, selected_topic: selectedTopic }),
+        body: JSON.stringify({ action, selected_topic: selectedTopic, auto_approve: autoApprove }),
       });
       return res.ok;
     } catch (e) { console.error(e); return false; }

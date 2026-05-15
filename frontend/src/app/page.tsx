@@ -154,9 +154,9 @@ function ActiveRunView({
   run: Run;
   messages: AgentMessage[];
   isWaitingForUser: boolean;
-  topics: string[];
+  topics: {topic: string, rationale: string}[];
   rationale?: string;
-  onApprove: (t: string) => void;
+  onApprove: (t: string, auto?: boolean) => void;
   onReject: () => void;
 }) {
   const pct = statusProgress(run.status);
@@ -228,12 +228,14 @@ function ActiveRunView({
 
 // ─── History View ─────────────────────────────────────────────────────────────
 
-function HistoryView({ onViewRun, onDeleteAll }: { onViewRun: (id: string) => void; onDeleteAll?: () => void }) {
+function HistoryView({ onViewRun, onDeleteAll, onDeleted, stats }: { onViewRun: (id: string) => void; onDeleteAll?: () => void; onDeleted?: () => void; stats?: { total_runs: number; completed_runs: number; success_rate: number } }) {
   const [runs, setRuns] = useState<Run[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const reload = () => api.getRuns().then(r => { setRuns(r); setLoading(false); });
+
   useEffect(() => {
-    api.getRuns().then(r => { setRuns(r); setLoading(false); });
+    reload();
   }, []);
 
   return (
@@ -247,6 +249,7 @@ function HistoryView({ onViewRun, onDeleteAll }: { onViewRun: (id: string) => vo
             onClick={async () => {
               if (confirm('Delete all pipeline history? This cannot be undone.')) {
                 await onDeleteAll();
+                if (onDeleted) onDeleted();
               }
             }}
           >
@@ -258,9 +261,9 @@ function HistoryView({ onViewRun, onDeleteAll }: { onViewRun: (id: string) => vo
       {/* Stats strip */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 'var(--spacing-md)' }}>
         {[
-          { label: 'Total Runs', value: stats.total_runs },
-          { label: 'Completed', value: stats.completed_runs },
-          { label: 'Success Rate', value: `${stats.success_rate.toFixed(0)}%` },
+          { label: 'Total Runs', value: stats?.total_runs ?? 0 },
+          { label: 'Completed', value: stats?.completed_runs ?? 0 },
+          { label: 'Success Rate', value: `${(stats?.success_rate ?? 0).toFixed(0)}%` },
         ].map(s => (
           <div key={s.label} className="feature-card feature-card-cream" style={{ padding: 'var(--spacing-lg)' }}>
             <p className="caption" style={{ color: 'var(--muted)', marginBottom: 4 }}>{s.label}</p>
@@ -473,8 +476,13 @@ export default function App() {
   const [run, setRun] = useState<Run | null>(null);
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [isWaiting, setIsWaiting] = useState(false);
-  const [topics, setTopics] = useState<string[]>([]);
+  const [topics, setTopics] = useState<{topic: string, rationale: string}[]>([]);
   const [topicRationale, setTopicRationale] = useState('');
+  const [stats, setStats] = useState<{total_runs: number; completed_runs: number; success_rate: number}>({ total_runs: 0, completed_runs: 0, success_rate: 0 });
+
+  useEffect(() => {
+    api.getStats().then(s => setStats(s));
+  }, []);
 
   // Poll the active run
   const poll = useCallback(async () => {
@@ -488,15 +496,17 @@ export default function App() {
       const pendingMsg = m.find(msg => msg.msg_type === 'TOPIC_AWAITING_APPROVAL');
       const alreadyResponded = m.some(msg => msg.msg_type === 'USER_INPUT');
       if (pendingMsg && !alreadyResponded) {
-        const topic = pendingMsg.payload?.topic;
-        const rationale = pendingMsg.payload?.rationale || '';
-        if (topic) setTopics([topic]);
-        setTopicRationale(rationale);
+        const payload = pendingMsg.payload;
+        if (payload.topics) {
+          setTopics(payload.topics);
+        } else if (payload.topic) {
+          setTopics([{topic: payload.topic, rationale: payload.rationale || ''}]);
+        }
+        setTopicRationale(payload.rationale || '');
         setIsWaiting(true);
       }
     } else {
       setIsWaiting(false);
-      setTopicRationale('');
     }
   }, [activeRunId]);
 
@@ -513,13 +523,13 @@ export default function App() {
     setTimeout(poll, 500);
   };
 
-  const handleApprove = async (selectedTopic: string) => {
+  const handleApprove = async (selectedTopic: string, autoApprove?: boolean) => {
     if (activeRunId) {
       if (selectedTopic === '') {
-        // Let AI decide - just approve without specific topic
-        await api.approveStep(activeRunId, 'approve', '');
+        // Let AI decide - use undefined so backend uses existing topic
+        await api.approveStep(activeRunId, 'approve', undefined, autoApprove);
       } else {
-        await api.approveStep(activeRunId, 'approve', selectedTopic);
+        await api.approveStep(activeRunId, 'approve', selectedTopic, autoApprove);
       }
       setIsWaiting(false);
     }
@@ -536,11 +546,6 @@ export default function App() {
   const handleViewHistoryRun = (id: string) => {
     setHistoryRunId(id);
     setView('run_detail');
-  };
-
-  const handleDeleteAllRuns = async () => {
-    await api.deleteAllRuns();
-    setRuns([]);
   };
 
   return (
@@ -577,7 +582,7 @@ export default function App() {
         )}
 
         {view === 'history' && (
-          <HistoryView onViewRun={handleViewHistoryRun} />
+          <HistoryView onViewRun={handleViewHistoryRun} onDeleteAll={api.deleteAllRuns} onDeleted={() => setView('home')} stats={stats} />
         )}
 
         {view === 'run_detail' && historyRunId && (

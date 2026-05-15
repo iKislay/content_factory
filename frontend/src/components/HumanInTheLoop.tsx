@@ -2,104 +2,145 @@
 
 import { useState } from 'react';
 
+interface TopicOption {
+  topic: string;
+  rationale: string;
+}
+
 interface Props {
-  topics: string[];
+  topics: TopicOption[];
   rationale?: string;
-  onApprove: (topic: string) => void;
+  onApprove: (topic: string, autoApprove?: boolean) => void;
   onReject: () => void;
 }
 
 export default function HumanInTheLoop({ topics, rationale = '', onApprove, onReject }: Props) {
-  const [selected, setSelected] = useState<string>(topics[0] || '');
+  const [selected, setSelected] = useState<string>(topics[0]?.topic || '');
   const [custom, setCustom] = useState('');
+  const [autoApprove, setAutoApprove] = useState(false);
 
   const finalTopic = custom.trim() || selected;
 
+  const cardColors = ['feature-card-pink', 'feature-card-lavender', 'feature-card-ochre', 'feature-card-peach'];
+
   return (
-    <div className="feature-card feature-card-teal animate-in" style={{ marginBottom: 'var(--spacing-xl)' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 'var(--spacing-md)' }}>
-        <div>
-          <span className="caption-upper" style={{ color: 'rgba(255,255,255,0.6)', display: 'block', marginBottom: 4 }}>Human Approval Required</span>
-          <h3 className="title-lg">Choose a Topic to Continue</h3>
+    <div className="modal-overlay">
+      <div className="modal-container animate-in">
+        {/* Header Section */}
+        <div style={{ padding: 'var(--spacing-xl)', borderBottom: '1px solid var(--hairline)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 'var(--spacing-md)' }}>
+            <div>
+              <span className="caption-upper" style={{ color: 'var(--muted)', display: 'block', marginBottom: 4 }}>Decision Required</span>
+              <h2 className="display-sm">Pick a trending topic</h2>
+            </div>
+            <div className="badge badge-pending">
+              <span className="pulse-dot pulse-dot-amber" />
+              Human-in-the-loop
+            </div>
+          </div>
+          <p className="body-md" style={{ color: 'var(--muted)', maxWidth: 600 }}>
+            Our TrendScout agent found these high-potential topics. Select one to proceed or let the AI choose the best one.
+          </p>
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <span className="pulse-dot pulse-dot-green" style={{ marginTop: 6 }} />
-          <span style={{ fontSize: 13, color: 'rgba(255,255,255,0.7)' }}>Waiting for you</span>
-        </div>
-      </div>
 
-      {rationale && (
-        <div style={{ padding: '12px 16px', backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 8, marginBottom: 'var(--spacing-md)' }}>
-          <span className="caption-upper" style={{ color: 'rgba(255,255,255,0.5)', marginBottom: 4, display: 'block' }}>AI Reasoning</span>
-          <p className="body-sm" style={{ color: 'rgba(255,255,255,0.9)' }}>{rationale}</p>
-        </div>
-      )}
+        {/* Content Section */}
+        <div style={{ padding: 'var(--spacing-xl)', maxHeight: '60vh', overflowY: 'auto' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 'var(--spacing-lg)', marginBottom: 'var(--spacing-xl)' }}>
+            {topics.map((t, i) => (
+              <div
+                key={t.topic}
+                className={`feature-card ${cardColors[i % cardColors.length]} ${selected === t.topic && !custom ? 'topic-card-selected' : ''}`}
+                style={{ cursor: 'pointer', position: 'relative' }}
+                onClick={() => { setSelected(t.topic); setCustom(''); }}
+              >
+                {selected === t.topic && !custom && (
+                  <div className="selection-indicator">✓</div>
+                )}
+                <h3 className="title-md" style={{ marginBottom: 8, color: i % 2 === 0 && i < 2 ? 'white' : 'var(--ink)' }}>{t.topic}</h3>
+                <p className="body-sm" style={{ opacity: 0.8, color: i % 2 === 0 && i < 2 ? 'white' : 'var(--ink)' }}>{t.rationale}</p>
+              </div>
+            ))}
+          </div>
 
-      <p className="body-sm" style={{ opacity: 0.85, marginBottom: 'var(--spacing-md)' }}>
-        Select the topic you want to generate a video about, or type your own.
-      </p>
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--spacing-xs)', marginBottom: 'var(--spacing-md)' }}>
-        {topics.map((t) => (
-          <label
-            key={t}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)',
-              padding: 'var(--spacing-sm) var(--spacing-md)',
-              backgroundColor: selected === t && !custom ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.06)',
-              borderRadius: 'var(--rounded-md)',
-              cursor: 'pointer',
-              border: `1.5px solid ${selected === t && !custom ? 'rgba(255,255,255,0.6)' : 'transparent'}`,
-              transition: 'all 0.15s',
-            }}
-          >
+          <div style={{ marginBottom: 'var(--spacing-xl)' }}>
+            <label className="title-sm" style={{ display: 'block', marginBottom: 12 }}>Or propose a custom topic</label>
             <input
-              type="radio"
-              name="topic"
-              value={t}
-              checked={selected === t && !custom}
-              onChange={() => { setSelected(t); setCustom(''); }}
-              style={{ accentColor: 'white' }}
+              type="text"
+              className="text-input"
+              placeholder="e.g. The impact of quantum computing on cybersecurity..."
+              value={custom}
+              onChange={e => setCustom(e.target.value)}
+              style={{ border: custom ? '2px solid var(--primary)' : undefined }}
             />
-            <span className="body-sm">{t}</span>
+          </div>
+
+          <label className="toggle-row" style={{ padding: '16px 20px' }}>
+            <input
+              type="checkbox"
+              checked={autoApprove}
+              onChange={e => setAutoApprove(e.target.checked)}
+            />
+            <div>
+              <p className="title-sm">Enable Auto-Approve Mode</p>
+              <p className="body-sm" style={{ color: 'var(--muted)' }}>Continue without pausing for future decisions in this run.</p>
+            </div>
           </label>
-        ))}
+        </div>
+
+        {/* Footer Actions */}
+        <div style={{ padding: 'var(--spacing-lg) var(--spacing-xl)', backgroundColor: 'var(--surface-soft)', display: 'flex', gap: 'var(--spacing-md)', justifyContent: 'flex-end', borderTop: '1px solid var(--hairline)', borderRadius: '0 0 var(--rounded-xl) var(--rounded-xl)' }}>
+          <button className="btn-secondary" onClick={onReject}>
+            ↻ Refresh Trends
+          </button>
+          <button className="btn-secondary" style={{ color: 'var(--muted)' }} onClick={() => onApprove('', autoApprove)}>
+            Let AI Decide
+          </button>
+          <button 
+            className="btn-primary" 
+            onClick={() => onApprove(finalTopic, autoApprove)}
+            disabled={!finalTopic}
+          >
+            Continue with selection →
+          </button>
+        </div>
       </div>
 
-      <div style={{ marginBottom: 'var(--spacing-lg)' }}>
-        <input
-          type="text"
-          className="text-input"
-          placeholder="Or type your own topic…"
-          value={custom}
-          onChange={e => setCustom(e.target.value)}
-          style={{ backgroundColor: 'rgba(255,255,255,0.1)', borderColor: 'rgba(255,255,255,0.2)', color: 'white' }}
-        />
-      </div>
-
-      <div style={{ display: 'flex', gap: 'var(--spacing-sm)', flexWrap: 'wrap' }}>
-        <button
-          className="btn-primary"
-          style={{ backgroundColor: 'var(--on-dark)', color: 'var(--brand-teal)' }}
-          onClick={() => onApprove(finalTopic)}
-          disabled={!finalTopic}
-        >
-          ✓ Continue with: {finalTopic}
-        </button>
-        <button
-          className="btn-secondary"
-          onClick={onReject}
-        >
-          ↻ Get New Topic
-        </button>
-        <button
-          className="btn-ghost"
-          style={{ color: 'rgba(255,255,255,0.6)' }}
-          onClick={() => onApprove('')}
-        >
-          Let AI Decide
-        </button>
-      </div>
+      <style jsx>{`
+        .modal-overlay {
+          position: fixed;
+          top: 0; left: 0; right: 0; bottom: 0;
+          background-color: rgba(10, 10, 10, 0.4);
+          backdrop-filter: blur(4px);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          z-index: 1000;
+          padding: 20px;
+        }
+        .modal-container {
+          background-color: var(--canvas);
+          width: 100%;
+          max-width: 1000px;
+          border-radius: var(--rounded-xl);
+          box-shadow: 0 24px 64px rgba(0,0,0,0.2);
+          position: relative;
+        }
+        .topic-card-selected {
+          transform: translateY(-4px);
+          box-shadow: 0 8px 16px rgba(0,0,0,0.1);
+          border: 2px solid var(--primary);
+        }
+        .selection-indicator {
+          position: absolute;
+          top: 12px; right: 12px;
+          background: var(--primary);
+          color: white;
+          width: 24px; height: 24px;
+          border-radius: 50%;
+          display: flex; align-items: center; justify-content: center;
+          font-weight: bold;
+        }
+      `}</style>
     </div>
   );
 }

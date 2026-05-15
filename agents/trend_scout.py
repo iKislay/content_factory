@@ -29,19 +29,21 @@ from modules.discovery import FALLBACK_TOPICS
 
 _SCOUT_SYSTEM = """You are a trend analyst for a viral short-form video channel.
 
-Your task: find the best topic to create a video about RIGHT NOW.
+Your task: find the top 3 best topics to create a video about RIGHT NOW.
 
 Steps:
 1. Call get_trending_topic to see what's trending (try region="IN" first)
-2. Call web_search with the returned topic to verify it's interesting and has
-   good video potential (search for recent news or surprising facts about it)
-3. Based on what you find, decide: is this topic good for a short video?
-   If yes, return the topic. If it's too niche or boring, try get_trending_topic
-   with region="US" as a second option.
+2. Call web_search with the returned topics to verify they are interesting and have
+   good video potential.
+3. Based on what you find, decide on the 3 best topics.
 
-When you have chosen your final topic, respond with ONLY this text:
-TOPIC: <the chosen topic>
-RATIONALE: <one sentence explaining why this topic will perform well>
+When you have chosen your final topics, respond with ONLY this text:
+TOPIC 1: <the chosen topic 1>
+RATIONALE 1: <one sentence explaining why this topic will perform well>
+TOPIC 2: <the chosen topic 2>
+RATIONALE 2: <one sentence explaining why this topic will perform well>
+TOPIC 3: <the chosen topic 3>
+RATIONALE 3: <one sentence explaining why this topic will perform well>
 
 Do not include any other text."""
 
@@ -58,6 +60,29 @@ class TrendScoutAgent(BaseAgent):
     name = "trend_scout"
 
     def run(self, run_id: str, context: Dict[str, Any]) -> AgentResult:
+        user_provided_topic = context.get("topic")
+        
+        # If user provided a meaningful topic (not empty, not TBD, not auto-discover), use it directly
+        auto_keywords = ['auto-discover', 'find topic', 'discover', 'trending', 'generate topic']
+        is_auto_topic = user_provided_topic and any(kw in user_provided_topic.lower() for kw in auto_keywords)
+        
+        if user_provided_topic and user_provided_topic.strip() and user_provided_topic != "TBD" and not is_auto_topic:
+            topic = user_provided_topic.strip()
+            self.log(f"Using user-provided topic: '{topic}'")
+            self._post_selected(
+                run_id,
+                topic,
+                "User provided topic.",
+                "user_provided",
+                "IN",
+            )
+            return AgentResult(
+                success=True,
+                output={"topic": topic, "rationale": "User provided topic."},
+                next_agent="research",
+                reasoning=f"User topic: '{topic}'",
+            )
+
         # Resume path — topic already selected in a previous run
         if context.get("topic") and context["topic"] != "TBD":
             topic = context["topic"]
@@ -94,52 +119,53 @@ class TrendScoutAgent(BaseAgent):
         try:
             final_text, all_calls, all_results = generate_with_tools(
                 system_prompt=_SCOUT_SYSTEM,
-                user_prompt="Find the best topic for a viral short video right now.",
+                user_prompt="Find the top 3 best topics for a viral short video right now.",
                 tools=available_tools,
                 executor=executor,
                 max_rounds=config.MAX_TOOL_ROUNDS,
             )
-            topic, rationale = self._parse_response(final_text)
+            topics_data = self._parse_response(final_text)
+            topic = topics_data[0]["topic"] if topics_data else "TBD"
+            rationale = topics_data[0]["rationale"] if topics_data else ""
         except Exception as e:
             self.log(f"Tool-use failed: {e} — using fallback discovery")
             topic, rationale = self._fallback_topic()
+            topics_data = [{"topic": topic, "rationale": rationale}]
 
         source = "tool_use" if all_calls else "fallback"
-        self.log(f"Topic: '{topic}' ({source})")
-        self.log(
-            f"Tool calls: {len(all_calls)} "
-            f"({[c.tool_name for c in all_calls]})"
-        )
-
-        self._post_selected(run_id, topic, rationale, source, "IN")
+        self.log(f"Topics found: {[t['topic'] for t in topics_data]} ({source})")
+        
+        # Post the first one as selected for now, but we will send all to the orchestrator/UI
+        self._post_selected(run_id, topic, rationale, source, "IN", topics=topics_data)
 
         return AgentResult(
             success=True,
-            output={"topic": topic, "rationale": rationale},
+            output={"topic": topic, "rationale": rationale, "topics": topics_data},
             next_agent="research",
-            reasoning=f"Selected '{topic}' via {source}. {rationale}",
+            reasoning=f"Found {len(topics_data)} topics via {source}. Primary: '{topic}'",
         )
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    def _parse_response(self, text: str) -> tuple[str, str]:
-        """Extract TOPIC and RATIONALE from the LLM's final response."""
-        topic = ""
-        rationale = ""
+    def _parse_response(self, text: str) -> list[dict[str, str]]:
+        """Extract TOPICS and RATIONALES from the LLM's final response."""
+        results = []
+        current = {}
 
         for line in text.splitlines():
             line = line.strip()
-            if line.upper().startswith("TOPIC:"):
-                topic = line.split(":", 1)[1].strip()
-            elif line.upper().startswith("RATIONALE:"):
-                rationale = line.split(":", 1)[1].strip()
+            if "TOPIC" in line.upper() and ":" in line:
+                if "topic" in current:
+                    results.append(current)
+                    current = {}
+                current["topic"] = line.split(":", 1)[1].strip()
+            elif "RATIONALE" in line.upper() and ":" in line:
+                current["rationale"] = line.split(":", 1)[1].strip()
 
-        if not topic:
-            # Fallback: use the whole response as a topic if short
-            topic = text.strip().split("\n")[0][:100]
-            rationale = "Selected from LLM response."
+        if current and "topic" in current:
+            results.append(current)
 
-        return topic, rationale
+        return results
 
     def _fallback_topic(self) -> tuple[str, str]:
         """Return a curated fallback topic when tool-use fails."""
@@ -155,6 +181,7 @@ class TrendScoutAgent(BaseAgent):
         rationale: str,
         source: str,
         region: str,
+        topics: list = None
     ) -> None:
         """Post TOPIC_SELECTED to the blackboard."""
         self.post_message(
@@ -165,6 +192,8 @@ class TrendScoutAgent(BaseAgent):
                 "rationale": rationale,
                 "source": source,
                 "region": region,
+                "topics": topics or [{"topic": topic, "rationale": rationale}]
             },
             recipient="research",
         )
+
