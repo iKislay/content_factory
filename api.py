@@ -337,6 +337,8 @@ class RunRequest(BaseModel):
     topic: str
     auto_approve: bool = False
     persona: Optional[str] = "The Analyst"
+    mode: Optional[str] = "video"  # "video" or "text"
+    platform: Optional[str] = "linkedin"  # "linkedin" or "twitter" (used when mode="text")
 
 @app.get("/api/runs")
 def get_all_runs():
@@ -507,12 +509,16 @@ def get_stats():
     finally:
         conn.close()
 
-def run_pipeline_task(run_id: str, auto_approve: bool):
+def run_pipeline_task(run_id: str, auto_approve: bool, mode: str = "video", platform: str = "linkedin"):
     state = PipelineState()
     try:
         state.init_db()
         orchestrator = OrchestratorAgent(state)
-        result = orchestrator.run(run_id=run_id, auto_approve=auto_approve)
+        context = {
+            "mode": mode,
+            "platform": platform,
+        }
+        result = orchestrator.run(run_id=run_id, auto_approve=auto_approve, context=context)
         if not result.success:
             state.update_status(run_id, "FAILED")
     except Exception as e:
@@ -528,12 +534,32 @@ def start_run(req: RunRequest, background_tasks: BackgroundTasks):
     state.init_db()
     run_id = state.create_run(req.topic, req.persona)
     
+    mode = req.mode or "video"
+    platform = req.platform or "linkedin"
+    
+    # Store mode and platform in DB for later retrieval
+    import sqlite3
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "UPDATE pipeline_runs SET mode = ?, platform = ? WHERE run_id = ?",
+        (mode, platform, run_id)
+    )
+    conn.commit()
+    conn.close()
+    
     # Run in background
-    thread = threading.Thread(target=run_pipeline_task, args=(run_id, req.auto_approve))
+    thread = threading.Thread(target=run_pipeline_task, args=(run_id, req.auto_approve, mode, platform))
     thread.daemon = True
     thread.start()
     
-    return {"run_id": run_id, "status": "PENDING", "topic": req.topic, "persona": req.persona}
+    return {
+        "run_id": run_id, 
+        "status": "PENDING", 
+        "topic": req.topic, 
+        "persona": req.persona,
+        "mode": mode,
+        "platform": platform,
+    }
 
 @app.get("/api/personas")
 def get_personas():

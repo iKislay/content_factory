@@ -385,8 +385,7 @@ def fetch_rss_feed(feed_ids: str, max_items_per_feed: int = 5) -> List[Dict[str,
     return [item.to_dict() for item in items]
 
 
-# ─── 9. fetch_platform_trends ────────────────────────────────────────────────────
-
+# ─── 9. fetch_platform_trends ──────────────────────────────────────────────────
 
 @registry.tool(
     name="fetch_platform_trends",

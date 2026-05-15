@@ -131,6 +131,20 @@ class PlannerAgent(BaseAgent):
         persona_data = get_persona(persona_name)
         persona_inst = persona_data.get("planner_instruction", "")
 
+        mode = context.get("mode", "video")
+        platform = context.get("platform", "")
+
+        viral_dna = {}
+        if mode == "text" and platform:
+            self.log(f"Step 0/4 — Fetching viral DNA for {platform}...")
+            from tools.definitions import fetch_platform_trends
+            try:
+                trend_data = fetch_platform_trends(platform, topic)
+                viral_dna = trend_data.get("viral_dna", {})
+                self.log(f"  → Viral DNA: {viral_dna.get('hook_type', 'unknown')}")
+            except Exception as e:
+                self.log(f"  → Failed to fetch viral DNA: {e}")
+
         # ── Step 1: Audience analysis ─────────────────────────────────────────
         self.log("Step 1/4 — Audience analysis...")
         audience_profile = self._step_audience(topic, rc, topic_rationale, persona_inst)
@@ -167,6 +181,9 @@ class PlannerAgent(BaseAgent):
             "research_facts": research.get("facts", []),
             "research_stats": research.get("stats", []),
             "key_insight": research.get("key_insight", ""),
+            "mode": mode,
+            "platform": platform,
+            "viral_dna": viral_dna,
         }
 
         self.log("ContentBrief assembled ✓")

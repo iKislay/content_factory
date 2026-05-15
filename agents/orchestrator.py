@@ -11,13 +11,15 @@ The Orchestrator is responsible for:
   6. Failure Handling: Retry with exponential backoff; graceful degradation
   7. Progress Logging: Reading PRODUCTION_PROGRESS + PRODUCTION_SUMMARY
                        to surface fan-out timing stats in real time (Task 5)
+  8. Mode Branching:   Handles VIDEO_MODE vs TEXT_MODE pipeline flows
 
-Full pipeline (Task 2+):
+Full pipeline (VIDEO_MODE):
   TrendScout → Research → Planner → Narrator → Critic → Production → Publisher
-                                        ↑_______________|
-                                          revision loop
 
-Status → Agent mapping:
+Full pipeline (TEXT_MODE):
+  TrendScout → Research → Planner → TextNarrator → TextCritic → TextPublisher
+
+Status → Agent mapping (VIDEO_MODE):
   PENDING          → TrendScoutAgent
   TOPIC_FOUND      → ResearchAgent
   RESEARCHED       → PlannerAgent
@@ -26,6 +28,15 @@ Status → Agent mapping:
   NARRATED         → ProductionAgent
   AUDIO_DONE       → PublisherAgent
   COMPILED         → PublisherAgent
+  DONE             → (terminal)
+
+Status → Agent mapping (TEXT_MODE):
+  PENDING          → TrendScoutAgent
+  TOPIC_FOUND      → ResearchAgent
+  RESEARCHED       → PlannerAgent
+  PLANNED          → TextNarratorAgent
+  TEXT_REVIEW      → TextCriticAgent
+  TEXT_APPROVED    → TextPublisherAgent
   DONE             → (terminal)
 
 Note: The revision loop is handled inside _advance_status for the 'critic' case.
@@ -46,6 +57,9 @@ from agents.narrator import NarratorAgent
 from agents.critic import CriticAgent
 from agents.production import ProductionAgent
 from agents.publisher import PublisherAgent
+from agents.text_narrator import TextNarratorAgent
+from agents.text_critic import TextCriticAgent
+from agents.text_publisher import TextPublisherAgent
 from state import PipelineState
 
 try:
@@ -60,16 +74,16 @@ _log = logger.get_pipeline_logger("orchestrator")
 
 # ─── Status → Agent routing table ─────────────────────────────────────────────
 
-_STATUS_TO_AGENT: Dict[str, Optional[str]] = {
+_STATUS_TO_AGENT_VIDEO: Dict[str, Optional[str]] = {
     "PENDING":                 "trend_scout",
     "TOPIC_AWAITING_APPROVAL": "trend_scout",
     "TOPIC_FOUND":             "research",
     "RESEARCHED":              "planner",
     "PLANNED":                 "narrator",
     "AWAITING_CRITIC":         "critic",
-    "SCRIPT_AWAITING_APPROVAL": "critic",      # user can review/edit script
+    "SCRIPT_AWAITING_APPROVAL": "critic",
     "NARRATED":                "production",
-    "STYLE_AWAITING_APPROVAL": "production",  # user selects visual style
+    "STYLE_AWAITING_APPROVAL": "production",
     "VISUALS_DONE":            "production",
     "AUDIO_DONE":              "publisher",
     "ANIMATED":                "publisher",
@@ -79,11 +93,38 @@ _STATUS_TO_AGENT: Dict[str, Optional[str]] = {
     "FAILED":                  None,
 }
 
-# Ordered agent list used for plan declaration and resume calculation
-_FULL_ORDER: List[str] = [
+_STATUS_TO_AGENT_TEXT: Dict[str, Optional[str]] = {
+    "PENDING":                 "trend_scout",
+    "TOPIC_AWAITING_APPROVAL": "trend_scout",
+    "TOPIC_FOUND":             "research",
+    "RESEARCHED":              "planner",
+    "PLANNED":                 "text_narrator",
+    "TEXT_REVIEW":             "text_critic",
+    "TEXT_AWAITING_APPROVAL":  "text_critic",
+    "TEXT_PUBLISHED":          "text_publisher",
+    "DONE":                   None,
+    "CANCELLED":               None,
+    "FAILED":                  None,
+}
+
+def _get_status_to_agent(mode: str) -> Dict[str, Optional[str]]:
+    """Get the appropriate status-to-agent mapping based on mode."""
+    if mode == "text":
+        return _STATUS_TO_AGENT_TEXT
+    return _STATUS_TO_AGENT_VIDEO
+
+
+# Ordered agent lists used for plan declaration and resume calculation
+_VIDEO_ORDER: List[str] = [
     "trend_scout", "research", "planner",
     "narrator", "critic",
     "production", "publisher",
+]
+
+_TEXT_ORDER: List[str] = [
+    "trend_scout", "research", "planner",
+    "text_narrator", "text_critic",
+    "text_publisher",
 ]
 
 
@@ -95,6 +136,9 @@ class OrchestratorAgent(BaseAgent):
     and observes their results. Its unique contributions are the planning layer
     (upfront declaration), the reflection layer (post-agent reasoning logging),
     and the revision loop (autonomous Narrator ↔ Critic iteration).
+    
+    Also handles mode branching between VIDEO_MODE (video generation pipeline)
+    and TEXT_MODE (text content for LinkedIn/Twitter).
     """
 
     name = "orchestrator"
@@ -109,6 +153,9 @@ class OrchestratorAgent(BaseAgent):
             "critic":      CriticAgent(state),
             "production":  ProductionAgent(state),
             "publisher":   PublisherAgent(state),
+            "text_narrator": TextNarratorAgent(state),
+            "text_critic":  TextCriticAgent(state),
+            "text_publisher": TextPublisherAgent(state),
         }
 
     # ── Main entry point ──────────────────────────────────────────────────────
@@ -121,23 +168,40 @@ class OrchestratorAgent(BaseAgent):
     ) -> AgentResult:
         """Drive the full pipeline for a run (new or resumed)."""
         run_id, is_resume, topic = self._resolve_run(run_id)
-        self._declare_plan(run_id, is_resume, topic)
-
-        status = self.state.get_run_status(run_id)
-        persona = self.state.get_run_persona(run_id)
+        
+        # Get mode from context or database
+        mode = context.get("mode")
+        platform = context.get("platform")
+        if not mode:
+            mode = self.state.get_run_mode(run_id)
+        if not platform:
+            platform = self.state.get_run_platform(run_id)
+        
         ctx: Dict[str, Any] = {
             "topic": topic,
             "revision_count": 0,
             "revision_feedback": "",
             "auto_approve": auto_approve,
-            "persona": persona,
+            "persona": self.state.get_run_persona(run_id),
+            "mode": mode,
+            "platform": platform,
         }
+        
+        self.log(f"Mode: {mode}, Platform: {platform}")
+        
+        # Get the appropriate status mapping and order
+        status_to_agent = _get_status_to_agent(mode)
+        agent_order = _TEXT_ORDER if mode == "text" else _VIDEO_ORDER
+        
+        self._declare_plan(run_id, is_resume, topic, agent_order)
+
+        status = self.state.get_run_status(run_id)
 
         while True:
             current_status = self.state.get_run_status(run_id)
             if BROADCAST_AVAILABLE:
-                progress = self._calculate_progress(current_status)
-                broadcast.emit_progress_update(run_id, progress, _STATUS_TO_AGENT.get(current_status, "unknown"))
+                progress = self._calculate_progress(current_status, mode)
+                broadcast.emit_progress_update(run_id, progress, status_to_agent.get(current_status, "unknown"))
 
             if current_status in ("CANCELLED", "FAILED"):
                 self.log(f"Pipeline {current_status.lower()} — stopping")
@@ -182,7 +246,7 @@ class OrchestratorAgent(BaseAgent):
                 status = "TOPIC_FOUND"
                 continue
 
-            # Script review decision point (after Critic approves)
+            # Script review decision point (after Critic approves - video mode)
             if status == "SCRIPT_AWAITING_APPROVAL":
                 user_input = self._wait_for_approval(run_id, "SCRIPT_APPROVAL")
                 if user_input.get("action") == "reject":
@@ -202,6 +266,22 @@ class OrchestratorAgent(BaseAgent):
                 self.post_message(run_id=run_id, msg_type="SCRIPT_APPROVED", payload={})
                 status = "NARRATED"
                 continue
+            
+            # Text review decision point (after TextCritic approves - text mode)
+            if status == "TEXT_AWAITING_APPROVAL":
+                user_input = self._wait_for_approval(run_id, "TEXT_APPROVAL")
+                if user_input.get("action") == "reject":
+                    self.log("Text content rejected — sending back for revision")
+                    ctx["revision_count"] = ctx.get("revision_count", 0) + 1
+                    ctx["revision_feedback"] = user_input.get("feedback", "Content needs revision")
+                    status = "PLANNED"
+                    continue
+                
+                # User approved - store the content
+                self.log("Text content approved by user")
+                self.post_message(run_id=run_id, msg_type="TEXT_USER_APPROVED", payload={})
+                status = "TEXT_PUBLISHED"
+                continue
 
             # Visual style decision point (before Production)
             if status == "STYLE_AWAITING_APPROVAL":
@@ -217,7 +297,7 @@ class OrchestratorAgent(BaseAgent):
                 status = "NARRATED"
                 continue
 
-            next_agent_name = _STATUS_TO_AGENT.get(status)
+            next_agent_name = status_to_agent.get(status)
 
             if next_agent_name is None:
                 self.log(f"Run {run_id[:8]} is {status} — pipeline complete.")
@@ -416,28 +496,112 @@ class OrchestratorAgent(BaseAgent):
             self.state.mark_done(run_id)
             return "DONE"
 
+        # ── TEXT MODE AGENTS ─────────────────────────────────────────────────────
+        
+        elif agent_name == "text_narrator":
+            # Text draft awaits Critic approval
+            ctx["text_content"] = result.output.get("content", "")
+            ctx["text_platform"] = result.output.get("platform", "linkedin")
+            self.state.update_status(run_id, "TEXT_REVIEW")
+            return "TEXT_REVIEW"
+
+        elif agent_name == "text_critic":
+            decision = result.output.get("decision", "APPROVE")
+            content = result.output.get("content", ctx.get("text_content", ""))
+            
+            if decision == "APPROVE":
+                auto_approve = ctx.get("auto_approve", False)
+                
+                self.post_message(
+                    run_id=run_id,
+                    msg_type="TEXT_APPROVED",
+                    payload={
+                        "content": content,
+                        "platform": ctx.get("text_platform", "linkedin"),
+                        "topic": ctx.get("topic", ""),
+                    },
+                )
+                
+                if auto_approve:
+                    self.log(f"[TEXT CRITIC APPROVED] auto-approve, publishing directly")
+                    self.state.update_status(run_id, "TEXT_PUBLISHED")
+                    return "TEXT_PUBLISHED"
+                
+                self.log("[TEXT CRITIC APPROVED] waiting for user text review")
+                self.state.update_status(run_id, "TEXT_AWAITING_APPROVAL")
+                self.post_message(
+                    run_id=run_id,
+                    msg_type="TEXT_AWAITING_APPROVAL",
+                    payload={
+                        "content": content,
+                        "platform": ctx.get("text_platform", "linkedin"),
+                        "topic": ctx.get("topic", ""),
+                    },
+                )
+                return "TEXT_AWAITING_APPROVAL"
+            
+            else:
+                # Revision loop for text
+                ctx["revision_count"] = ctx.get("revision_count", 0) + 1
+                ctx["revision_feedback"] = result.output.get("feedback", "")
+                self.state.update_status(run_id, "PLANNED")
+                self.log(
+                    f"[TEXT REVISION {ctx['revision_count']}] "
+                    f"Re-dispatching TextNarrator with feedback..."
+                )
+                return "PLANNED"
+
+        elif agent_name == "text_publisher":
+            output_path = result.output.get("output_path", "")
+            self.post_message(
+                run_id=run_id,
+                msg_type="TEXT_PUBLISHED",
+                payload={
+                    "output_path": output_path,
+                    "platform": ctx.get("text_platform", "linkedin"),
+                    "topic": ctx.get("topic", ""),
+                },
+            )
+            self.state.mark_done(run_id)
+            return "DONE"
+
         return self.state.get_run_status(run_id)
 
     # ── Supporting methods ────────────────────────────────────────────────────
 
-    def _calculate_progress(self, status: str) -> int:
+    def _calculate_progress(self, status: str, mode: str = "video") -> int:
         """Calculate pipeline progress percentage based on current status."""
-        progress_map = {
-            "PENDING": 0,
-            "TOPIC_AWAITING_APPROVAL": 10,
-            "TOPIC_FOUND": 15,
-            "RESEARCHED": 30,
-            "PLANNED": 45,
-            "AWAITING_CRITIC": 55,
-            "NARRATED": 65,
-            "VISUALS_DONE": 75,
-            "AUDIO_DONE": 85,
-            "ANIMATED": 90,
-            "COMPILED": 95,
-            "DONE": 100,
-            "CANCELLED": 0,
-            "FAILED": 0,
-        }
+        if mode == "text":
+            progress_map = {
+                "PENDING": 0,
+                "TOPIC_AWAITING_APPROVAL": 10,
+                "TOPIC_FOUND": 15,
+                "RESEARCHED": 30,
+                "PLANNED": 45,
+                "TEXT_REVIEW": 60,
+                "TEXT_APPROVED": 75,
+                "TEXT_PUBLISHED": 90,
+                "DONE": 100,
+                "CANCELLED": 0,
+                "FAILED": 0,
+            }
+        else:
+            progress_map = {
+                "PENDING": 0,
+                "TOPIC_AWAITING_APPROVAL": 10,
+                "TOPIC_FOUND": 15,
+                "RESEARCHED": 30,
+                "PLANNED": 45,
+                "AWAITING_CRITIC": 55,
+                "NARRATED": 65,
+                "VISUALS_DONE": 75,
+                "AUDIO_DONE": 85,
+                "ANIMATED": 90,
+                "COMPILED": 95,
+                "DONE": 100,
+                "CANCELLED": 0,
+                "FAILED": 0,
+            }
         return progress_map.get(status, 0)
 
     def _resolve_run(self, run_id: Optional[str]) -> tuple[str, bool, str]:
@@ -474,10 +638,10 @@ class OrchestratorAgent(BaseAgent):
         self.log(f"New run created: {placeholder_run_id[:8]}")
         return placeholder_run_id, False, ""
 
-    def _declare_plan(self, run_id: str, is_resume: bool, topic: str) -> None:
+    def _declare_plan(self, run_id: str, is_resume: bool, topic: str, agent_order: List[str] = _VIDEO_ORDER) -> None:
         """Log the execution plan and post it to the blackboard."""
         status = self.state.get_run_status(run_id)
-        remaining = self._get_remaining_agents(status)
+        remaining = self._get_remaining_agents(status, agent_order)
 
         mode = f"RESUMING (status={status}, topic='{topic}')" if is_resume else "STARTING"
         self.log(f"{mode} run {run_id[:8]}")
@@ -496,15 +660,15 @@ class OrchestratorAgent(BaseAgent):
             },
         )
 
-    def _get_remaining_agents(self, status: str) -> List[str]:
+    def _get_remaining_agents(self, status: str, agent_order: List[str] = _VIDEO_ORDER) -> List[str]:
         """Return agents still to run based on current pipeline status."""
-        next_agent = _STATUS_TO_AGENT.get(status)
+        status_to_agent = _get_status_to_agent("text") if "text" in agent_order else _get_status_to_agent("video")
+        next_agent = status_to_agent.get(status)
         if next_agent is None:
             return []
         try:
-            # For AWAITING_CRITIC, the next agent is critic
-            idx = _FULL_ORDER.index(next_agent)
-            return _FULL_ORDER[idx:]
+            idx = agent_order.index(next_agent)
+            return agent_order[idx:]
         except ValueError:
             return []
 

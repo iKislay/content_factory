@@ -108,23 +108,18 @@ class RSSAppProvider:
         self, 
         feed_id: str, 
         max_items: int = 10,
-        min_engagement: int = 0
     ) -> List[RSSItem]:
         """
-        Fetch items from a feed and filter by engagement.
-        
+        Fetch items from a feed.
+
         Args:
             feed_id: RSS.app feed ID
             max_items: Maximum items to return
-            min_engagement: Minimum engagement threshold
-        
+
         Returns:
-            List of RSSItem sorted by engagement (highest first)
+            List of RSSItem.
         """
-        items = get_feed_items(feed_id, max_items=max_items * 2)
-        
-        return items[:max_items]
-    
+        return get_feed_items(feed_id, max_items=max_items)    
     def analyze_viral_dna(self, posts: List[RSSItem]) -> Dict[str, Any]:
         """
         Analyze the structural DNA of viral posts.

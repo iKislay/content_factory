@@ -44,22 +44,42 @@ class PipelineState:
             cursor.execute("ALTER TABLE pipeline_runs ADD COLUMN persona TEXT DEFAULT 'The Analyst'")
         except sqlite3.OperationalError:
             pass
+        try:
+            cursor.execute("ALTER TABLE pipeline_runs ADD COLUMN mode TEXT DEFAULT 'video'")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute("ALTER TABLE pipeline_runs ADD COLUMN platform TEXT DEFAULT 'linkedin'")
+        except sqlite3.OperationalError:
+            pass
         conn.commit()
         conn.close()
 
-    def create_run(self, topic: str, persona: str = "The Analyst") -> str:
+    def create_run(self, topic: str, persona: str = "The Analyst", mode: str = "video", platform: str = "linkedin") -> str:
         """Insert a new run, returns run_id (uuid4)."""
         run_id = str(uuid.uuid4())
         now = datetime.now().isoformat()
         conn = sqlite3.connect(config.DB_PATH)
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO pipeline_runs (run_id, topic, persona, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (run_id, topic, persona, "PENDING", now, now)
+            "INSERT INTO pipeline_runs (run_id, topic, persona, mode, platform, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (run_id, topic, persona, mode, platform, "PENDING", now, now)
         )
         conn.commit()
         conn.close()
         return run_id
+
+    def update_run_config(self, run_id: str, mode: str, platform: str) -> None:
+        """Update run mode and platform."""
+        now = datetime.now().isoformat()
+        conn = sqlite3.connect(config.DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE pipeline_runs SET mode = ?, platform = ?, updated_at = ? WHERE run_id = ?",
+            (mode, platform, now, run_id)
+        )
+        conn.commit()
+        conn.close()
 
     def get_pending_run(self) -> Optional[dict]:
         """Returns the most recent non-DONE run."""
@@ -93,6 +113,24 @@ class PipelineState:
         conn.close()
         # Fallback if DB doesn't have it or row[0] is None
         return row[0] if row and row[0] else "The Analyst"
+
+    def get_run_mode(self, run_id: str) -> str:
+        """Get the mode for a run (video or text)."""
+        conn = sqlite3.connect(config.DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT mode FROM pipeline_runs WHERE run_id = ?", (run_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row and row[0] else "video"
+
+    def get_run_platform(self, run_id: str) -> str:
+        """Get the platform for a run (linkedin or twitter)."""
+        conn = sqlite3.connect(config.DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT platform FROM pipeline_runs WHERE run_id = ?", (run_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row and row[0] else "linkedin"
 
     def update_status(self, run_id: str, status: str) -> None:
         """Update run status."""

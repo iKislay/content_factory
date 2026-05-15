@@ -89,12 +89,12 @@ export const api = {
     } catch (e) { console.error(e); return { total_runs: 0, completed_runs: 0, success_rate: 0 }; }
   },
 
-  async startRun(topic: string, autoApprove: boolean = false, persona: string = "The Analyst"): Promise<{run_id: string} | null> {
+  async startRun(topic: string, autoApprove: boolean = false, persona: string = "The Analyst", mode: string = "video", platform?: string): Promise<{run_id: string} | null> {
     try {
       const res = await fetch(`${API_BASE}/runs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ topic, auto_approve: autoApprove, persona }),
+        body: JSON.stringify({ topic, auto_approve: autoApprove, persona, mode, platform }),
       });
       if (!res.ok) throw new Error('Failed to start run');
       return await res.json();
