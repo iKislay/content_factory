@@ -3,7 +3,7 @@ import sqlite3
 import uuid
 import json
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 import config
 
 
@@ -11,7 +11,7 @@ class PipelineState:
     """SQLite state manager for pipeline runs."""
 
     def init_db(self) -> None:
-        """Create the database and table if not exists."""
+        """Create all database tables if they don't exist."""
         conn = sqlite3.connect(config.DB_PATH)
         cursor = conn.cursor()
         cursor.execute("""
@@ -26,6 +26,18 @@ class PipelineState:
                 status TEXT DEFAULT 'PENDING',
                 created_at TEXT,
                 updated_at TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS agent_messages (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                sender TEXT NOT NULL,
+                recipient TEXT,
+                msg_type TEXT NOT NULL,
+                payload_json TEXT,
+                created_at TEXT,
+                FOREIGN KEY (run_id) REFERENCES pipeline_runs(run_id)
             )
         """)
         conn.commit()
@@ -200,3 +212,83 @@ class PipelineState:
     def mark_done(self, run_id: str) -> None:
         """Set status to DONE."""
         self.update_status(run_id, "DONE")
+
+    # ─── Agent Message Bus ────────────────────────────────────────────────────
+
+    def post_message(
+        self,
+        run_id: str,
+        sender: str,
+        msg_type: str,
+        payload: dict,
+        recipient: Optional[str] = None,
+    ) -> str:
+        """Post a message to the agent blackboard. Returns message id."""
+        msg_id = str(uuid.uuid4())
+        now = datetime.now().isoformat()
+        payload_json = json.dumps(payload)
+        conn = sqlite3.connect(config.DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            """INSERT INTO agent_messages
+               (id, run_id, sender, recipient, msg_type, payload_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (msg_id, run_id, sender, recipient, msg_type, payload_json, now),
+        )
+        conn.commit()
+        conn.close()
+        return msg_id
+
+    def get_messages(
+        self, run_id: str, msg_type: Optional[str] = None
+    ) -> List[dict]:
+        """Retrieve all messages for a run, optionally filtered by type."""
+        conn = sqlite3.connect(config.DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        if msg_type:
+            cursor.execute(
+                """SELECT * FROM agent_messages
+                   WHERE run_id = ? AND msg_type = ?
+                   ORDER BY created_at ASC""",
+                (run_id, msg_type),
+            )
+        else:
+            cursor.execute(
+                """SELECT * FROM agent_messages
+                   WHERE run_id = ? ORDER BY created_at ASC""",
+                (run_id,),
+            )
+        rows = cursor.fetchall()
+        conn.close()
+        result = []
+        for row in rows:
+            d = dict(row)
+            if d.get("payload_json"):
+                d["payload"] = json.loads(d["payload_json"])
+            else:
+                d["payload"] = {}
+            result.append(d)
+        return result
+
+    def get_latest_message(self, run_id: str, msg_type: str) -> Optional[dict]:
+        """Return the most recent message of a given type for a run."""
+        conn = sqlite3.connect(config.DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT * FROM agent_messages
+               WHERE run_id = ? AND msg_type = ?
+               ORDER BY created_at DESC LIMIT 1""",
+            (run_id, msg_type),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            d = dict(row)
+            if d.get("payload_json"):
+                d["payload"] = json.loads(d["payload_json"])
+            else:
+                d["payload"] = {}
+            return d
+        return None

@@ -27,3 +27,7 @@ DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 OUTPUT_DIR = "output"
 TEMP_DIR = "temp"
 DB_PATH = "state.db"
+
+# Agent configuration
+MAX_PRODUCTION_WORKERS = 3   # concurrent threads for image + audio fan-out
+AGENT_LOG_LEVEL = "INFO"     # structured agent logging level

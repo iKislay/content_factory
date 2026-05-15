@@ -5,7 +5,7 @@ from .visuals import generate_visuals
 from .voice import generate_audio
 from .animator import animate_scenes
 from .compiler import compile_video
-from .publisher import publish_video
+from .publisher import publish, publish_video  # both names available
 
 __all__ = [
     "get_trending_topic",
@@ -14,5 +14,6 @@ __all__ = [
     "generate_audio",
     "animate_scenes",
     "compile_video",
-    "publish_video"
+    "publish",
+    "publish_video",
 ]

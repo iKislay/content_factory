@@ -1,80 +1,71 @@
 # main.py
+"""
+Content Factory — Multi-Agent Pipeline Entry Point
+
+Launches the OrchestratorAgent which plans, routes work across specialist
+agents, and drives the full pipeline from topic discovery to video publishing.
+
+Usage:
+    python main.py               # start new run or resume pending run
+    python main.py --run <id>    # resume a specific run by ID
+"""
+
+import argparse
+import sys
 import os
+
 import config
 from state import PipelineState
-from modules import (
-    get_trending_topic,
-    generate_narrative,
-    generate_visuals,
-    generate_audio,
-    animate_scenes,
-    compile_video,
-    publish
-)
+from agents.orchestrator import OrchestratorAgent
 
 
-def run_pipeline():
-    """Main pipeline orchestrator with state recovery."""
+def run_pipeline(run_id: str | None = None) -> None:
+    """
+    Initialize state and launch the Orchestrator.
+
+    The Orchestrator handles everything from here:
+      - Checks for a pending run (crash recovery)
+      - Declares the execution plan
+      - Dispatches TrendScout → Narrator → Production → Publisher
+      - Reflects on each result before proceeding
+      - Posts the full causal trace to the agent blackboard
+    """
+    # Ensure output directories exist
+    os.makedirs(config.OUTPUT_DIR, exist_ok=True)
+    os.makedirs(config.TEMP_DIR, exist_ok=True)
+
+    # Initialize state DB (creates tables if not exist)
     state = PipelineState()
     state.init_db()
 
-    run = state.get_pending_run()
+    # Launch the Orchestrator
+    orchestrator = OrchestratorAgent(state)
+    result = orchestrator.run(run_id=run_id)
 
-    if run:
-        print(f"[MAIN] Resuming run {run['run_id']} — status: {run['status']}")
-        topic = run['topic']
-        run_id = run['run_id']
+    if result.success:
+        final_path = result.output.get("final_path", "")
+        print(f"\n{'='*60}")
+        print(f"  Pipeline complete ✓")
+        print(f"  Output: {final_path}")
+        print(f"{'='*60}\n")
+        sys.exit(0)
     else:
-        topic = get_trending_topic()
-        run_id = state.create_run(topic)
-        print(f"[MAIN] New run | Topic: {topic}")
-
-    status = state.get_run_status(run_id)
-
-    if status == 'PENDING':
-        scenes = generate_narrative(topic)
-        state.save_scenes(run_id, scenes)
-        state.update_status(run_id, 'NARRATED')
-        status = 'NARRATED'
-
-    scenes = state.get_scenes(run_id)
-
-    if status == 'NARRATED':
-        image_paths = generate_visuals(scenes, config.TEMP_DIR)
-        state.save_image_paths(run_id, image_paths)
-        state.update_status(run_id, 'VISUALS_DONE')
-        status = 'VISUALS_DONE'
-
-    if status == 'VISUALS_DONE':
-        audio_map = generate_audio(scenes, config.TEMP_DIR)
-        state.save_audio_map(run_id, audio_map)
-        state.update_status(run_id, 'AUDIO_DONE')
-        status = 'AUDIO_DONE'
-
-    if status == 'AUDIO_DONE':
-        image_paths = state.get_image_paths(run_id)
-        audio_map = state.get_audio_map(run_id)
-        video_paths = animate_scenes(image_paths, audio_map, scenes, config.TEMP_DIR)
-        state.save_video_paths(run_id, video_paths)
-        state.update_status(run_id, 'ANIMATED')
-        status = 'ANIMATED'
-
-    if status == 'ANIMATED':
-        audio_map = state.get_audio_map(run_id)
-        video_paths = state.get_video_paths(run_id)
-        final_path = compile_video(video_paths, audio_map)
-        state.save_final_path(run_id, final_path)
-        state.update_status(run_id, 'COMPILED')
-        status = 'COMPILED'
-
-    if status == 'COMPILED':
-        final_path = state.get_final_path(run_id)
-        publish(final_path, topic)
-        state.mark_done(run_id)
-        print(f"[MAIN] Pipeline complete ✓ → {final_path}")
-
-    print(f"[MAIN] Run {run_id} finished successfully")
+        print(f"\n{'='*60}")
+        print(f"  Pipeline FAILED ✗")
+        print(f"  Errors: {result.errors}")
+        print(f"{'='*60}\n")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    run_pipeline()
+    parser = argparse.ArgumentParser(
+        description="Content Factory — Multi-Agent Video Pipeline"
+    )
+    parser.add_argument(
+        "--run",
+        metavar="RUN_ID",
+        default=None,
+        help="Resume a specific run by its UUID (optional)",
+    )
+    args = parser.parse_args()
+    run_pipeline(run_id=args.run)
