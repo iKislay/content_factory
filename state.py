@@ -240,6 +240,79 @@ class PipelineState:
         conn.close()
         return msg_id
 
+    def log_handoff(
+        self,
+        run_id: str,
+        from_agent: str,
+        to_agent: str,
+        payload: dict,
+        metadata: Optional[dict] = None
+    ) -> str:
+        """
+        Log an agent-to-agent handoff with payload details.
+        
+        This makes the data flow between agents explicit and traceable.
+        """
+        msg_id = str(uuid.uuid4())
+        now = datetime.now().isoformat()
+        
+        handoff_payload = {
+            "from_agent": from_agent,
+            "to_agent": to_agent,
+            "payload_keys": list(payload.keys()) if payload else [],
+            "payload_summary": self._summarize_payload(payload),
+            "metadata": metadata or {},
+            "handoff_time": now
+        }
+        
+        payload_json = json.dumps(handoff_payload)
+        conn = sqlite3.connect(config.DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            """INSERT INTO agent_messages
+               (id, run_id, sender, recipient, msg_type, payload_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (msg_id, run_id, from_agent, to_agent, "HANDOFF", payload_json, now),
+        )
+        conn.commit()
+        conn.close()
+        return msg_id
+
+    def _summarize_payload(self, payload: dict) -> dict:
+        """Create a summary of payload for logging."""
+        summary = {}
+        for key, value in payload.items():
+            if isinstance(value, str):
+                summary[key] = value[:100] + "..." if len(value) > 100 else value
+            elif isinstance(value, list):
+                summary[key] = f"[{len(value)} items]"
+            elif isinstance(value, dict):
+                summary[key] = f"{{{len(value)} keys}}"
+            else:
+                summary[key] = str(type(value).__name__)
+        return summary
+
+    def get_handoffs(self, run_id: str) -> List[dict]:
+        """Get all handoff logs for a run."""
+        conn = sqlite3.connect(config.DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT * FROM agent_messages
+               WHERE run_id = ? AND msg_type = 'HANDOFF'
+               ORDER BY created_at ASC""",
+            (run_id,),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        result = []
+        for row in rows:
+            d = dict(row)
+            if d.get("payload_json"):
+                d["payload"] = json.loads(d["payload_json"])
+            result.append(d)
+        return result
+
     def get_messages(
         self, run_id: str, msg_type: Optional[str] = None
     ) -> List[dict]:

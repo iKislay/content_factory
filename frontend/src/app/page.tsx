@@ -1,10 +1,54 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { api, Run, AgentMessage } from '@/lib/api';
+import { api, ws, Run, AgentMessage, WebSocketMessage } from '@/lib/api';
 import AgentGraph from '@/components/AgentGraph';
 import ActivityLog from '@/components/ActivityLog';
 import HumanInTheLoop from '@/components/HumanInTheLoop';
+
+// ─── Live status display hook for WebSocket messages ───────────────────────────
+
+function useLiveStatus(runId: string | null) {
+  const [liveStatus, setLiveStatus] = useState<{
+    currentAgent: string;
+    activity: string;
+    progress: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!runId) return;
+
+    const handleMessage = (msg: WebSocketMessage) => {
+      if (msg.run_id !== runId) return;
+
+      if (msg.type === 'agent_activity') {
+        const details = msg.details as { message?: string };
+        setLiveStatus({
+          currentAgent: msg.agent,
+          activity: details?.message || msg.activity,
+          progress: -1,
+        });
+      } else if (msg.type === 'progress_update') {
+        setLiveStatus(prev => ({
+          currentAgent: msg.current_agent,
+          activity: msg.details,
+          progress: msg.progress,
+        }));
+      } else if (msg.type === 'step_complete') {
+        setLiveStatus({
+          currentAgent: msg.agent,
+          activity: msg.message,
+          progress: -1,
+        });
+      }
+    };
+
+    const unsubscribe = ws.subscribe(runId, handleMessage);
+    return unsubscribe;
+  }, [runId]);
+
+  return liveStatus;
+}
 
 // ─── Shared run polling hook ───────────────────────────────────────────────────
 
@@ -15,6 +59,7 @@ function useRunPolling(runId: string | null) {
   const [topics, setTopics] = useState<{topic: string; rationale: string}[]>([]);
   const [topicRationale, setTopicRationale] = useState('');
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const liveStatus = useLiveStatus(runId);
 
   const poll = useCallback(async () => {
     if (!runId) return;
@@ -74,7 +119,7 @@ function useRunPolling(runId: string | null) {
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [runId, poll]);
 
-  return { run, messages, isWaiting, topics, topicRationale, poll };
+  return { run, messages, isWaiting, topics, topicRationale, poll, liveStatus };
 }
 
 // ─── Status helpers ───────────────────────────────────────────────────────────
@@ -222,6 +267,7 @@ function ActiveRunView({
   onApprove,
   onReject,
   onCancel,
+  liveStatus,
 }: {
   run: Run;
   messages: AgentMessage[];
@@ -231,16 +277,41 @@ function ActiveRunView({
   onApprove: (t: string, auto?: boolean) => void;
   onReject: () => void;
   onCancel?: () => void;
+  liveStatus?: { currentAgent: string; activity: string; progress: number } | null;
 }) {
   const pct = statusProgress(run.status);
   const isDone = run.status === 'DONE';
   const isTerminal = run.status === 'DONE' || run.status === 'FAILED' || run.status === 'CANCELLED';
+
+  const displayPct = liveStatus && liveStatus.progress >= 0 ? liveStatus.progress : pct;
 
   // Compute images count from production progress messages
   const imageDoneMsgs = messages.filter(m => m.msg_type === 'PRODUCTION_PROGRESS' && m.payload?.asset_type === 'image' && m.payload?.status === 'DONE');
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--spacing-xl)' }}>
+      {/* Live status banner */}
+      {liveStatus && !isTerminal && (
+        <div className="animate-in" style={{
+          backgroundColor: 'var(--surface-strong)',
+          borderRadius: 'var(--rounded-md)',
+          padding: '12px 16px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          border: '1px solid var(--hairline)',
+        }}>
+          <span className="pulse-dot pulse-dot-green" />
+          <div style={{ flex: 1 }}>
+            <span style={{ fontWeight: 600, color: 'var(--ink)', textTransform: 'capitalize' }}>
+              {liveStatus.currentAgent === 'pipeline' ? 'Pipeline' : liveStatus.currentAgent?.replace('_', ' ')}
+            </span>
+            <span style={{ color: 'var(--muted)', marginLeft: 8 }}>—</span>
+            <span style={{ color: 'var(--muted)', marginLeft: 8 }}>{liveStatus.activity}</span>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
         <div>
@@ -265,10 +336,10 @@ function ActiveRunView({
       <div>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
           <span className="caption" style={{ color: 'var(--muted)' }}>Pipeline Progress</span>
-          <span className="caption" style={{ color: 'var(--muted)' }}>{pct}%</span>
+          <span className="caption" style={{ color: 'var(--muted)' }}>{displayPct}%</span>
         </div>
         <div className="progress-bar-track">
-          <div className="progress-bar-fill" style={{ width: `${pct}%` }} />
+          <div className="progress-bar-fill" style={{ width: `${displayPct}%` }} />
         </div>
       </div>
 
@@ -396,7 +467,7 @@ function HistoryView({ onViewRun, onDeleteAll, onDeleted, stats }: { onViewRun: 
 // ─── Run Detail View ──────────────────────────────────────────────────────────
 
 function RunDetailView({ runId, onBack }: { runId: string; onBack: () => void }) {
-  const { run, messages, isWaiting, topics, topicRationale, poll } = useRunPolling(runId);
+  const { run, messages, isWaiting, topics, topicRationale, poll, liveStatus } = useRunPolling(runId);
 
   const handleApprove = async (selectedTopic: string, autoApprove?: boolean) => {
     if (selectedTopic === '') {
@@ -436,6 +507,7 @@ function RunDetailView({ runId, onBack }: { runId: string; onBack: () => void })
         onApprove={handleApprove}
         onReject={handleReject}
         onCancel={handleCancel}
+        liveStatus={liveStatus}
       />
     </div>
   );
@@ -593,7 +665,7 @@ export default function App() {
   const [stats, setStats] = useState<{total_runs: number; completed_runs: number; success_rate: number}>({ total_runs: 0, completed_runs: 0, success_rate: 0 });
 
   // Use the shared polling hook for the active run
-  const { run, messages, isWaiting, topics, topicRationale, poll } = useRunPolling(activeRunId);
+  const { run, messages, isWaiting, topics, topicRationale, poll, liveStatus } = useRunPolling(activeRunId);
 
   // ── URL hash routing ────────────────────────────────────────────────────────
 
@@ -707,6 +779,7 @@ export default function App() {
             onApprove={handleApprove}
             onReject={handleReject}
             onCancel={handleCancel}
+            liveStatus={liveStatus}
           />
         )}
 

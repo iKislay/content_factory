@@ -16,6 +16,9 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from state import PipelineState
+import logger as log_module
+
+_structured_logger = log_module.get_pipeline_logger("agent")
 
 
 # ─── Typed Handoff ────────────────────────────────────────────────────────────
@@ -119,6 +122,12 @@ class BaseAgent(ABC):
         """Structured agent log line with timestamp."""
         ts = time.strftime("%H:%M:%S")
         print(f"[{ts}][{self.name.upper()}] {msg}")
+        _structured_logger.debug(
+            msg,
+            agent=self.name,
+            component=self.__class__.__name__,
+            timestamp=ts
+        )
 
     # ── Tool tracing ──────────────────────────────────────────────────────────
 

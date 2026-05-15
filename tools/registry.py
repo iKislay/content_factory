@@ -40,6 +40,7 @@ class ToolDef:
     description: str
     parameters: Dict[str, Any]   # JSON Schema object
     fn: Callable
+    fallback_fn: Optional[Callable] = None  # Fallback function if primary fails
 
 
 class ToolRegistry:
@@ -59,14 +60,25 @@ class ToolRegistry:
         name: str,
         description: str,
         parameters: Dict[str, Any],
+        fallback: Optional[Callable] = None,
     ) -> Callable:
         """
         Decorator factory.  Registers the decorated function as a tool.
+
+        Args:
+            name: Tool name
+            description: Human-readable description
+            parameters: JSON Schema for parameters
+            fallback: Optional fallback function to use when primary fails
 
         Example::
 
             @registry.tool("web_search", "Search the web", {...})
             def web_search(query: str) -> list: ...
+
+            # With fallback
+            @registry.tool("generate_image", "Generate image", {...}, fallback=fallback_image)
+            def generate_image(prompt: str) -> str: ...
         """
         def decorator(fn: Callable) -> Callable:
             self._tools[name] = ToolDef(
@@ -74,6 +86,7 @@ class ToolRegistry:
                 description=description,
                 parameters=parameters,
                 fn=fn,
+                fallback_fn=fallback,
             )
             return fn
 

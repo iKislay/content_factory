@@ -6,6 +6,8 @@ ToolExecutor is a stateless dispatcher — it looks up the tool in the registry,
 executes it, captures exceptions into ToolResult.error, and records wall-clock
 execution time. An optional trace_fn callback fires after every execution so
 agents can post TOOL_CALLED / TOOL_RESULT messages to the blackboard.
+
+Includes retry with exponential backoff for transient failures.
 """
 
 from __future__ import annotations
@@ -17,6 +19,9 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional
 
 from tools.registry import ToolRegistry
+
+import config
+from circuit_breaker import get_circuit_breaker, CircuitState
 
 
 # ─── Data types ───────────────────────────────────────────────────────────────
@@ -111,9 +116,12 @@ class ToolExecutor:
         """
         Execute *call* and return a ToolResult.
 
+        Implements retry with exponential backoff for transient failures.
+        Circuit breaker pattern prevents repeated calls to failing tools.
         Never raises — exceptions from the tool function are captured into
         ToolResult.error so the LLM can reason about the failure.
         """
+        circuit_breaker = get_circuit_breaker()
         tool_def = self._registry.get(call.tool_name)
 
         if tool_def is None:
@@ -127,27 +135,135 @@ class ToolExecutor:
                 self._trace_fn(call, result)
             return result
 
-        t0 = time.monotonic()
+        if tool_def.fallback_fn is not None and circuit_breaker.should_use_fallback(call.tool_name):
+            if self._trace_fn:
+                circuit_call = ToolCall(
+                    tool_name=call.tool_name,
+                    arguments=call.arguments,
+                    call_id=f"{call.call_id}-circuit"
+                )
+                circuit_log = ToolResult(
+                    tool_name=call.tool_name,
+                    call_id=circuit_call.call_id,
+                    error=f"Circuit breaker active - using fallback for {call.tool_name}",
+                    duration_ms=0,
+                )
+                self._trace_fn(circuit_call, circuit_log)
+            return self._execute_fallback(tool_def, call, None)
+
+        max_retries = config.TOOL_MAX_RETRIES
+        base_delay = config.TOOL_RETRY_BASE_DELAY
+        max_delay = config.TOOL_RETRY_MAX_DELAY
+        backoff_factor = config.TOOL_RETRY_BACKOFF
+
+        last_error = None
+        total_duration_ms = 0.0
+
+        for attempt in range(max_retries + 1):
+            t0 = time.monotonic()
+            try:
+                output = tool_def.fn(**call.arguments)
+                result = ToolResult(
+                    tool_name=call.tool_name,
+                    call_id=call.call_id,
+                    output=output,
+                    duration_ms=round((time.monotonic() - t0) * 1000, 1),
+                )
+                if attempt > 0:
+                    result.error = f"Recovered after {attempt} retry(s). Original error: {last_error}"
+                circuit_breaker.record_success(call.tool_name)
+                if self._trace_fn:
+                    self._trace_fn(call, result)
+                return result
+            except Exception as exc:
+                last_error = str(exc)
+                attempt_duration = round((time.monotonic() - t0) * 1000, 1)
+                total_duration_ms += attempt_duration
+
+                if attempt < max_retries:
+                    delay = min(base_delay * (backoff_factor ** attempt), max_delay)
+                    if self._trace_fn:
+                        retry_call = ToolCall(
+                            tool_name=call.tool_name,
+                            arguments=call.arguments,
+                            call_id=f"{call.call_id}-retry-{attempt}"
+                        )
+                        retry_result = ToolResult(
+                            tool_name=call.tool_name,
+                            call_id=retry_call.call_id,
+                            error=f"Retry {attempt + 1}/{max_retries} after {delay:.1f}s: {last_error}",
+                            duration_ms=attempt_duration,
+                        )
+                        self._trace_fn(retry_call, retry_result)
+                    time.sleep(delay)
+                    continue
+
+                result = ToolResult(
+                    tool_name=call.tool_name,
+                    call_id=call.call_id,
+                    error=f"Failed after {max_retries} retries. Last error: {last_error}",
+                    duration_ms=total_duration_ms,
+                )
+
+                circuit_breaker.record_failure(call.tool_name)
+
+                # Try fallback if available
+                if tool_def.fallback_fn is not None:
+                    fallback_result = self._execute_fallback(tool_def, call, result)
+                    if fallback_result is not None:
+                        return fallback_result
+
+        if self._trace_fn:
+            self._trace_fn(call, result)
+
+        return result
+
+    def _execute_fallback(
+        self,
+        tool_def: ToolDef,
+        call: ToolCall,
+        failed_result: ToolResult
+    ) -> Optional[ToolResult]:
+        """Execute fallback function when primary tool fails."""
+        fallback_name = getattr(tool_def.fallback_fn, '__name__', 'fallback')
+        
+        if self._trace_fn:
+            fallback_call = ToolCall(
+                tool_name=f"fallback:{tool_def.name}",
+                arguments=call.arguments,
+                call_id=f"{call.call_id}-fallback"
+            )
+            fallback_log = ToolResult(
+                tool_name=tool_def.name,
+                call_id=fallback_call.call_id,
+                error=f"Fallback activated: {fallback_name}",
+                duration_ms=0,
+            )
+            self._trace_fn(fallback_call, fallback_log)
+
         try:
-            output = tool_def.fn(**call.arguments)
+            t0 = time.monotonic()
+            output = tool_def.fallback_fn(**call.arguments)
             result = ToolResult(
                 tool_name=call.tool_name,
                 call_id=call.call_id,
                 output=output,
                 duration_ms=round((time.monotonic() - t0) * 1000, 1),
             )
-        except Exception as exc:
+            result.error = f"DEGRADED: Used fallback ({fallback_name}). Original error: {failed_result.error}"
+            if self._trace_fn:
+                self._trace_fn(call, result)
+            return result
+        except Exception as fallback_exc:
             result = ToolResult(
                 tool_name=call.tool_name,
                 call_id=call.call_id,
-                error=str(exc),
-                duration_ms=round((time.monotonic() - t0) * 1000, 1),
+                error=f"Fallback '{fallback_name}' also failed. Primary error: {failed_result.error}. Fallback error: {str(fallback_exc)}",
+                duration_ms=0,
             )
-
-        if self._trace_fn:
-            self._trace_fn(call, result)
-
-        return result
+            if self._trace_fn:
+                self._trace_fn(call, result)
+            return result
 
     def execute_many(self, calls: List[ToolCall]) -> List[ToolResult]:
         """Execute a list of ToolCalls sequentially and return all results."""

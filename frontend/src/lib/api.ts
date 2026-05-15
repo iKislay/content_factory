@@ -1,4 +1,11 @@
 const API_BASE = 'http://localhost:8000/api';
+const WS_BASE = 'ws://localhost:8000/ws/pipeline';
+
+export type WebSocketMessage =
+  | { type: 'step_complete'; run_id: string; agent: string; status: string; message: string }
+  | { type: 'progress_update'; run_id: string; progress: number; current_agent: string; details: string }
+  | { type: 'status_change'; run_id: string; status: string; topic: string }
+  | { type: 'agent_activity'; run_id: string; agent: string; activity: string; details: Record<string, unknown> };
 
 export interface Run {
   run_id: string;
@@ -117,6 +124,97 @@ export const api = {
       const res = await fetch(`${API_BASE}/runs/${runId}/cancel`, { method: 'POST' });
       return res.ok;
     } catch (e) { console.error(e); return false; }
+  },
+};
+
+type MessageHandler = (msg: WebSocketMessage) => void;
+const wsConnections: Map<string, WebSocket> = new Map();
+const messageHandlers: Map<string, Set<MessageHandler>> = new Map();
+
+function ensureConnection(runId: string): WebSocket {
+  let ws = wsConnections.get(runId);
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    return ws;
+  }
+
+  if (ws) {
+    ws.close();
+  }
+
+  const wsUrl = runId ? `${WS_BASE}?run_id=${runId}` : WS_BASE;
+  ws = new WebSocket(wsUrl);
+
+  ws.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data) as WebSocketMessage;
+      const handlers = messageHandlers.get(runId);
+      if (handlers) {
+        handlers.forEach(handler => handler(msg));
+      }
+      const globalHandlers = messageHandlers.get('');
+      if (globalHandlers) {
+        globalHandlers.forEach(handler => handler(msg));
+      }
+    } catch (e) {
+      console.error('Failed to parse WS message', e);
+    }
+  };
+
+  ws.onerror = (error) => {
+    console.error('WebSocket error:', error);
+  };
+
+  ws.onclose = () => {
+    wsConnections.delete(runId);
+    setTimeout(() => {
+      if (messageHandlers.has(runId)) {
+        ensureConnection(runId);
+      }
+    }, 3000);
+  };
+
+  wsConnections.set(runId, ws);
+  return ws;
+}
+
+export const ws = {
+  subscribe(runId: string, handler: MessageHandler): () => void {
+    if (!messageHandlers.has(runId)) {
+      messageHandlers.set(runId, new Set());
+      ensureConnection(runId);
+    }
+    messageHandlers.get(runId)!.add(handler);
+    
+    return () => {
+      const handlers = messageHandlers.get(runId);
+      if (handlers) {
+        handlers.delete(handler);
+        if (handlers.size === 0) {
+          messageHandlers.delete(runId);
+          const ws = wsConnections.get(runId);
+          if (ws) {
+            ws.close();
+            wsConnections.delete(runId);
+          }
+        }
+      }
+    };
+  },
+
+  subscribeAll(handler: MessageHandler): () => void {
+    const runId = '';
+    if (!messageHandlers.has(runId)) {
+      messageHandlers.set(runId, new Set());
+      ensureConnection(runId);
+    }
+    messageHandlers.get(runId)!.add(handler);
+
+    return () => {
+      const handlers = messageHandlers.get(runId);
+      if (handlers) {
+        handlers.delete(handler);
+      }
+    };
   },
 };
 

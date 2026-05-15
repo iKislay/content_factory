@@ -48,6 +48,15 @@ from agents.production import ProductionAgent
 from agents.publisher import PublisherAgent
 from state import PipelineState
 
+try:
+    import broadcast
+    BROADCAST_AVAILABLE = True
+except ImportError:
+    BROADCAST_AVAILABLE = False
+
+import logger
+_log = logger.get_pipeline_logger("orchestrator")
+
 
 # ─── Status → Agent routing table ─────────────────────────────────────────────
 
@@ -122,8 +131,14 @@ class OrchestratorAgent(BaseAgent):
 
         while True:
             current_status = self.state.get_run_status(run_id)
+            if BROADCAST_AVAILABLE:
+                progress = self._calculate_progress(current_status)
+                broadcast.emit_progress_update(run_id, progress, _STATUS_TO_AGENT.get(current_status, "unknown"))
+
             if current_status in ("CANCELLED", "FAILED"):
                 self.log(f"Pipeline {current_status.lower()} — stopping")
+                if BROADCAST_AVAILABLE:
+                    broadcast.emit_status_change(run_id, current_status, ctx.get("topic", ""))
                 return AgentResult(
                     success=False,
                     reasoning=f"Pipeline was {current_status.lower()}",
@@ -168,6 +183,10 @@ class OrchestratorAgent(BaseAgent):
 
             self.log(f"Status={status} → dispatching [{next_agent_name.upper()}]")
             result = self._dispatch(next_agent_name, run_id, ctx)
+            
+            # Log agent-to-agent handoff
+            self._log_agent_handoff(run_id, status, next_agent_name, result, ctx)
+            
             self._reflect(next_agent_name, result)
 
             if not result.success:
@@ -204,6 +223,11 @@ class OrchestratorAgent(BaseAgent):
             msg_type="PIPELINE_COMPLETE",
             payload={"run_id": run_id, "final_path": final_path},
         )
+
+        if BROADCAST_AVAILABLE:
+            broadcast.emit_step_complete(run_id, "pipeline", "completed", "Pipeline completed successfully!")
+            broadcast.emit_progress_update(run_id, 100, "completed", f"Video saved to: {final_path}")
+            broadcast.emit_status_change(run_id, "DONE", ctx.get("topic", ""))
 
         return AgentResult(
             success=True,
@@ -324,6 +348,26 @@ class OrchestratorAgent(BaseAgent):
 
     # ── Supporting methods ────────────────────────────────────────────────────
 
+    def _calculate_progress(self, status: str) -> int:
+        """Calculate pipeline progress percentage based on current status."""
+        progress_map = {
+            "PENDING": 0,
+            "TOPIC_AWAITING_APPROVAL": 10,
+            "TOPIC_FOUND": 15,
+            "RESEARCHED": 30,
+            "PLANNED": 45,
+            "AWAITING_CRITIC": 55,
+            "NARRATED": 65,
+            "VISUALS_DONE": 75,
+            "AUDIO_DONE": 85,
+            "ANIMATED": 90,
+            "COMPILED": 95,
+            "DONE": 100,
+            "CANCELLED": 0,
+            "FAILED": 0,
+        }
+        return progress_map.get(status, 0)
+
     def _resolve_run(self, run_id: Optional[str]) -> tuple[str, bool, str]:
         """Resolve the run to use — resume pending or create new."""
         if run_id:
@@ -398,13 +442,45 @@ class OrchestratorAgent(BaseAgent):
         """Invoke a specialist agent with 2-attempt retry and backoff."""
         agent = self._agents[agent_name]
 
+        if BROADCAST_AVAILABLE:
+            activity_messages = {
+                "trend_scout": "Searching Google Trends for trending topics...",
+                "research": "Researching topic and gathering facts...",
+                "planner": "Determining content strategy and scene structure...",
+                "narrator": "Writing script and narration for each scene...",
+                "critic": "Reviewing script for quality and accuracy...",
+                "production": "Generating images and audio in parallel...",
+                "publisher": "Compiling final video...",
+            }
+            broadcast.emit_agent_activity(
+                run_id, agent_name, "started", 
+                {"message": activity_messages.get(agent_name, f"Starting {agent_name}...")}
+            )
+
         for attempt in range(1, 3):
             try:
                 self.log(
                     f"Invoking {agent_name.upper()} "
                     f"(attempt {attempt}/2)..."
                 )
-                return agent.run(run_id=run_id, context=dict(ctx))
+                result = agent.run(run_id=run_id, context=dict(ctx))
+
+                if BROADCAST_AVAILABLE:
+                    status_map = {
+                        "trend_scout": "topic_found",
+                        "research": "researched",
+                        "planner": "planned",
+                        "narrator": "narrated",
+                        "critic": "critic_reviewed",
+                        "production": "production_done",
+                        "publisher": "published",
+                    }
+                    broadcast.emit_step_complete(
+                        run_id, agent_name, status_map.get(agent_name, "completed"),
+                        f"{agent_name.capitalize()} completed successfully" if result.success else f"{agent_name.capitalize()} failed"
+                    )
+
+                return result
             except Exception as exc:
                 self.log(f"{agent_name.upper()} raised: {exc}")
                 if attempt < 2:
@@ -412,6 +488,11 @@ class OrchestratorAgent(BaseAgent):
                     self.log(f"Retrying in {wait}s...")
                     time.sleep(wait)
                 else:
+                    if BROADCAST_AVAILABLE:
+                        broadcast.emit_step_complete(
+                            run_id, agent_name, "failed",
+                            f"{agent_name.capitalize()} failed after 2 attempts: {exc}"
+                        )
                     return AgentResult(
                         success=False,
                         reasoning=f"{agent_name} failed after 2 attempts.",
@@ -430,6 +511,65 @@ class OrchestratorAgent(BaseAgent):
         )
         if result.errors:
             self.log(f"[REFLECT] Non-fatal issues: {result.errors}")
+
+    def _log_agent_handoff(
+        self, 
+        run_id: str, 
+        from_status: str, 
+        to_agent: str, 
+        result: AgentResult,
+        ctx: Dict[str, Any]
+    ) -> None:
+        """
+        Log agent-to-agent handoff with payload details.
+        
+        This creates a traceable record of what data was passed
+        between agents in the pipeline.
+        """
+        from_status_map = {
+            "PENDING": "orchestrator",
+            "TOPIC_FOUND": "trend_scout",
+            "RESEARCHED": "research",
+            "PLANNED": "planner",
+            "NARRATED": "narrator",
+            "AWAITING_CRITIC": "critic",
+            "VISUALS_DONE": "production",
+            "AUDIO_DONE": "production",
+            "ANIMATED": "publisher",
+            "COMPILED": "publisher",
+        }
+        
+        from_agent = from_status_map.get(from_status, "unknown")
+        
+        payload = {
+            "topic": ctx.get("topic", ""),
+            "agent_result_success": result.success,
+            "agent_output_keys": list(result.output.keys()) if result.output else [],
+        }
+        
+        if result.output:
+            if "scenes" in result.output:
+                payload["scenes_count"] = len(result.output.get("scenes", []))
+            if "quality" in result.output:
+                payload["quality_score"] = result.output.get("quality", {}).get("score")
+            if "final_path" in result.output:
+                payload["has_video_output"] = True
+                
+        metadata = {
+            "from_status": from_status,
+            "to_agent": to_agent,
+            "reasoning": result.reasoning[:200] if result.reasoning else "",
+        }
+        
+        self.state.log_handoff(
+            run_id=run_id,
+            from_agent=from_agent,
+            to_agent=to_agent,
+            payload=payload,
+            metadata=metadata
+        )
+        
+        self.log(f"[HANDOFF] {from_agent} → {to_agent}: {payload.get('topic', 'N/A')}")
 
     def _update_topic(self, run_id: str, topic: str) -> None:
         """Update the topic field on pipeline_runs for the TBD placeholder."""

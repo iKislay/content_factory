@@ -148,6 +148,30 @@ def get_trending_topic(region: str = "IN") -> str:
 # ─── 4. generate_image ────────────────────────────────────────────────────────
 
 
+def generate_image_fallback(prompt: str, scene_id: int, output_dir: str) -> str:
+    """Fallback: Generate a placeholder image with text when primary fails."""
+    import os
+    from PIL import Image, ImageDraw, ImageFont
+
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, f"image_scene_{scene_id}.png")
+
+    width, height = 1024, 1792
+    img = Image.new("RGB", (width, height), color="#1a1a2e")
+    draw = ImageDraw.Draw(img)
+
+    text = f"Scene {scene_id}\n\n{prompt[:100]}..."
+    bbox = draw.textbbox((0, 0), text)
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+    position = ((width - text_width) // 2, (height - text_height) // 2)
+
+    draw.text(position, text, fill="#ffffff", align="center")
+
+    img.save(output_path)
+    return output_path
+
+
 @registry.tool(
     name="generate_image",
     description=(
@@ -172,6 +196,7 @@ def get_trending_topic(region: str = "IN") -> str:
         },
         "required": ["prompt", "scene_id", "output_dir"],
     },
+    fallback=generate_image_fallback,
 )
 def generate_image(prompt: str, scene_id: int, output_dir: str) -> str:
     """Delegate to the existing images provider."""
@@ -181,6 +206,28 @@ def generate_image(prompt: str, scene_id: int, output_dir: str) -> str:
 
 
 # ─── 5. synthesize_tts ────────────────────────────────────────────────────────
+
+
+def synthesize_tts_fallback(text: str, scene_id: int, output_dir: str) -> Dict[str, Any]:
+    """Fallback: Create a silent audio file when TTS fails."""
+    import os
+    import numpy as np
+
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, f"audio_scene_{scene_id}.wav")
+
+    sample_rate = 24000
+    duration_sec = 3.0
+    samples = int(sample_rate * duration_sec)
+    silence = np.zeros(samples, dtype=np.float32)
+
+    try:
+        import soundfile as sf
+        sf.write(output_path, silence, sample_rate)
+    except Exception:
+        return {"path": None, "duration": 0, "error": "Fallback: silent audio created (no TTS)"}
+
+    return {"path": output_path, "duration": duration_sec, "degraded": True}
 
 
 @registry.tool(
@@ -207,6 +254,7 @@ def generate_image(prompt: str, scene_id: int, output_dir: str) -> str:
         },
         "required": ["text", "scene_id", "output_dir"],
     },
+    fallback=synthesize_tts_fallback,
 )
 def synthesize_tts(text: str, scene_id: int, output_dir: str) -> Dict[str, Any]:
     """Synthesise speech via Kokoro TTS and return path + duration."""
