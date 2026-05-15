@@ -3,68 +3,82 @@
 OrchestratorAgent — the brain of the multi-agent pipeline.
 
 The Orchestrator is responsible for:
-  1. Planning: Declaring the full execution plan upfront ("I will run X → Y → Z")
-  2. Routing: Deciding which agent to invoke next based on pipeline state
-  3. Crash Recovery: On restart, reading the blackboard to determine the
-     exact point of failure and resume from there
-  4. Reflection: After each agent completes, logging its reasoning before
-     proceeding to the next step
-  5. Failure Handling: Retry logic with exponential backoff; graceful
-     degradation where possible (e.g., production fails → mark run as failed)
+  1. Planning:         Declaring the full execution plan upfront
+  2. Routing:          Deciding which agent runs next from pipeline status
+  3. Crash Recovery:   Reading blackboard to resume from exact failure point
+  4. Reflection:       Logging each agent's reasoning before proceeding
+  5. Revision Loop:    Managing the Narrator ↔ Critic feedback cycle
+  6. Failure Handling: Retry with exponential backoff; graceful degradation
 
-Pipeline status → Agent mapping:
-  PENDING        → TrendScoutAgent  (discover topic)
-  NARRATED       → ProductionAgent  (generate assets — images + audio)
-  AUDIO_DONE     → PublisherAgent   (compile + publish)
-  COMPILED       → PublisherAgent   (publish only, video already compiled)
-  DONE           → (no-op)
+Full pipeline (Task 2):
+  TrendScout → Research → Planner → Narrator → Critic → Production → Publisher
+                                        ↑_______________|
+                                          revision loop
 
-Note: We use the existing PipelineState status field as the authoritative
-resume checkpoint. The blackboard messages provide the detailed artifact
-payloads and causal trace.
+Status → Agent mapping:
+  PENDING          → TrendScoutAgent
+  TOPIC_FOUND      → ResearchAgent
+  RESEARCHED       → PlannerAgent
+  PLANNED          → NarratorAgent
+  AWAITING_CRITIC  → CriticAgent    (Narrator sets this; Critic may send back to PLANNED)
+  NARRATED         → ProductionAgent
+  AUDIO_DONE       → PublisherAgent
+  COMPILED         → PublisherAgent
+  DONE             → (terminal)
+
+Note: The revision loop is handled inside _advance_status for the 'critic' case.
+When Critic returns REVISE, status reverts to PLANNED and revision_count is
+incremented in ctx. The Narrator re-runs with revision_feedback in context.
 """
 
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, Optional, Type
+from typing import Any, Dict, List, Optional
 
 from agents.base import AgentResult, BaseAgent
 from agents.trend_scout import TrendScoutAgent
+from agents.research import ResearchAgent
+from agents.planner import PlannerAgent
 from agents.narrator import NarratorAgent
+from agents.critic import CriticAgent
 from agents.production import ProductionAgent
 from agents.publisher import PublisherAgent
 from state import PipelineState
 
 
-# ─── Status → Next Agent mapping ──────────────────────────────────────────────
+# ─── Status → Agent routing table ─────────────────────────────────────────────
 
 _STATUS_TO_AGENT: Dict[str, Optional[str]] = {
-    "PENDING":       "trend_scout",
-    "NARRATED":      "production",
-    "VISUALS_DONE":  "production",   # legacy: treat as needing production redo
-    "AUDIO_DONE":    "publisher",
-    "ANIMATED":      "publisher",
-    "COMPILED":      "publisher",
-    "DONE":          None,
+    "PENDING":          "trend_scout",
+    "TOPIC_FOUND":      "research",
+    "RESEARCHED":       "planner",
+    "PLANNED":          "narrator",
+    "AWAITING_CRITIC":  "critic",
+    "NARRATED":         "production",
+    "VISUALS_DONE":     "production",   # legacy status — treat as needing production
+    "AUDIO_DONE":       "publisher",
+    "ANIMATED":         "publisher",
+    "COMPILED":         "publisher",
+    "DONE":             None,
 }
 
-_AGENT_PRODUCES_STATUS: Dict[str, str] = {
-    "trend_scout": "PENDING",    # TrendScout → run creates PENDING, Narrator advances it
-    "narrator":    "NARRATED",
-    "production":  "AUDIO_DONE",
-    "publisher":   "DONE",
-}
+# Ordered agent list used for plan declaration and resume calculation
+_FULL_ORDER: List[str] = [
+    "trend_scout", "research", "planner",
+    "narrator", "critic",
+    "production", "publisher",
+]
 
 
 class OrchestratorAgent(BaseAgent):
     """
-    Plans, routes, and reflects across the full pipeline lifecycle.
+    Plans, routes, manages the revision loop, and reflects across the pipeline.
 
-    The Orchestrator is not itself a worker — it delegates to specialist
-    agents and observes their results. Its key value-add is the planning
-    and reflection layer that makes the system feel autonomous rather than
-    scripted.
+    The Orchestrator never does worker tasks itself — it delegates to specialists
+    and observes their results. Its unique contributions are the planning layer
+    (upfront declaration), the reflection layer (post-agent reasoning logging),
+    and the revision loop (autonomous Narrator ↔ Critic iteration).
     """
 
     name = "orchestrator"
@@ -73,47 +87,46 @@ class OrchestratorAgent(BaseAgent):
         super().__init__(state)
         self._agents: Dict[str, BaseAgent] = {
             "trend_scout": TrendScoutAgent(state),
+            "research":    ResearchAgent(state),
+            "planner":     PlannerAgent(state),
             "narrator":    NarratorAgent(state),
+            "critic":      CriticAgent(state),
             "production":  ProductionAgent(state),
             "publisher":   PublisherAgent(state),
         }
 
     # ── Main entry point ──────────────────────────────────────────────────────
 
-    def run(self, run_id: Optional[str] = None, context: Dict[str, Any] = {}) -> AgentResult:
-        """
-        Run the full pipeline for the given run_id (or discover a pending one).
-        """
-        # ── Resolve or create the run ─────────────────────────────────────────
+    def run(
+        self,
+        run_id: Optional[str] = None,
+        context: Dict[str, Any] = {},
+    ) -> AgentResult:
+        """Drive the full pipeline for a run (new or resumed)."""
         run_id, is_resume, topic = self._resolve_run(run_id)
-
-        # ── Declare the execution plan ────────────────────────────────────────
         self._declare_plan(run_id, is_resume, topic)
 
-        # ── Agent dispatch loop ───────────────────────────────────────────────
         status = self.state.get_run_status(run_id)
-        ctx: Dict[str, Any] = {"topic": topic}
+        ctx: Dict[str, Any] = {
+            "topic": topic,
+            "revision_count": 0,
+            "revision_feedback": "",
+        }
 
         while True:
             next_agent_name = _STATUS_TO_AGENT.get(status)
 
             if next_agent_name is None:
-                self.log(f"Run {run_id[:8]} is {status} — nothing to do.")
+                self.log(f"Run {run_id[:8]} is {status} — pipeline complete.")
                 break
 
-            self.log(
-                f"Status: {status} → dispatching to [{next_agent_name.upper()}]"
-            )
-
+            self.log(f"Status={status} → dispatching [{next_agent_name.upper()}]")
             result = self._dispatch(next_agent_name, run_id, ctx)
-
-            # ── Reflect on result ─────────────────────────────────────────────
             self._reflect(next_agent_name, result)
 
             if not result.success:
                 self.log(
-                    f"Agent [{next_agent_name.upper()}] failed — "
-                    f"errors: {result.errors}"
+                    f"[{next_agent_name.upper()}] failed: {result.errors}"
                 )
                 self.post_message(
                     run_id=run_id,
@@ -126,11 +139,7 @@ class OrchestratorAgent(BaseAgent):
                 )
                 return result
 
-            # ── Advance pipeline status ────────────────────────────────────────
-            new_status = self._advance_status(
-                next_agent_name, run_id, result, ctx
-            )
-            status = new_status
+            status = self._advance_status(next_agent_name, run_id, result, ctx)
 
             if status == "DONE":
                 break
@@ -150,12 +159,94 @@ class OrchestratorAgent(BaseAgent):
             reasoning="Full pipeline completed successfully.",
         )
 
-    # ── Internal helpers ──────────────────────────────────────────────────────
+    # ── Status advancement (including revision loop) ──────────────────────────
+
+    def _advance_status(
+        self,
+        agent_name: str,
+        run_id: str,
+        result: AgentResult,
+        ctx: Dict[str, Any],
+    ) -> str:
+        """
+        Update pipeline state after an agent completes.
+
+        The critic case is the most complex: it either advances to NARRATED
+        (approval) or reverts to PLANNED (revision) while incrementing the
+        revision counter in ctx.
+        """
+        if agent_name == "trend_scout":
+            topic = result.output.get("topic", "")
+            self._update_topic(run_id, topic)
+            ctx["topic"] = topic
+            self.state.update_status(run_id, "TOPIC_FOUND")
+            return "TOPIC_FOUND"
+
+        elif agent_name == "research":
+            # Research data lives on the blackboard — nothing to persist in DB
+            self.state.update_status(run_id, "RESEARCHED")
+            return "RESEARCHED"
+
+        elif agent_name == "planner":
+            # ContentBrief lives on the blackboard — nothing to persist in DB
+            self.state.update_status(run_id, "PLANNED")
+            return "PLANNED"
+
+        elif agent_name == "narrator":
+            # Scene draft awaits Critic approval — do not save to DB yet
+            ctx["narrator_scenes"] = result.output.get("scenes", [])
+            ctx["narrator_topic"] = result.output.get("topic", ctx.get("topic", ""))
+            self.state.update_status(run_id, "AWAITING_CRITIC")
+            return "AWAITING_CRITIC"
+
+        elif agent_name == "critic":
+            decision = result.output.get("decision", "APPROVE")
+
+            if decision == "APPROVE":
+                # Persist the approved scenes and advance
+                scenes = result.output.get("scenes", ctx.get("narrator_scenes", []))
+                self.state.save_scenes(run_id, scenes)
+                self.state.update_status(run_id, "NARRATED")
+                ctx["scenes"] = scenes
+                forced = result.output.get("forced", False)
+                revision_count = ctx.get("revision_count", 0)
+                self.log(
+                    f"[CRITIC APPROVED] scenes saved "
+                    f"(revisions={revision_count}, forced={forced})"
+                )
+                return "NARRATED"
+
+            else:
+                # Revision loop: revert to PLANNED, inject feedback into ctx
+                ctx["revision_count"] = ctx.get("revision_count", 0) + 1
+                ctx["revision_feedback"] = result.output.get("feedback", "")
+                self.state.update_status(run_id, "PLANNED")
+                self.log(
+                    f"[REVISION {ctx['revision_count']}] "
+                    f"Re-dispatching Narrator with feedback..."
+                )
+                return "PLANNED"
+
+        elif agent_name == "production":
+            self.state.save_image_paths(run_id, result.output.get("image_paths", []))
+            self.state.save_audio_map(run_id, result.output.get("audio_map", {}))
+            self.state.update_status(run_id, "AUDIO_DONE")
+            return "AUDIO_DONE"
+
+        elif agent_name == "publisher":
+            final_path = result.output.get("final_path", "")
+            if final_path:
+                self.state.save_final_path(run_id, final_path)
+            self.state.mark_done(run_id)
+            return "DONE"
+
+        return self.state.get_run_status(run_id)
+
+    # ── Supporting methods ────────────────────────────────────────────────────
 
     def _resolve_run(self, run_id: Optional[str]) -> tuple[str, bool, str]:
         """Resolve the run to use — resume pending or create new."""
         if run_id:
-            run = self.state.get_run_status(run_id)
             topic_msg = self.state.get_latest_message(run_id, "TOPIC_SELECTED")
             topic = topic_msg["payload"]["topic"] if topic_msg else ""
             return run_id, True, topic
@@ -168,26 +259,20 @@ class OrchestratorAgent(BaseAgent):
             )
             return pending["run_id"], True, pending["topic"]
 
-        # New run — create a placeholder; TrendScout will set the topic
         placeholder_run_id = self.state.create_run("TBD")
         self.log(f"New run created: {placeholder_run_id[:8]}")
         return placeholder_run_id, False, ""
 
     def _declare_plan(self, run_id: str, is_resume: bool, topic: str) -> None:
-        """Log and record the execution plan before any agent runs."""
+        """Log the execution plan and post it to the blackboard."""
         status = self.state.get_run_status(run_id)
         remaining = self._get_remaining_agents(status)
 
-        if is_resume and topic:
-            self.log(
-                f"RESUMING run {run_id[:8]} — topic: '{topic}' — "
-                f"status: {status}"
-            )
-        else:
-            self.log(f"STARTING new run {run_id[:8]}")
+        mode = f"RESUMING (status={status}, topic='{topic}')" if is_resume else "STARTING"
+        self.log(f"{mode} run {run_id[:8]}")
 
-        plan = " → ".join(a.upper() for a in remaining) if remaining else "DONE"
-        self.log(f"Execution plan: {plan}")
+        plan_str = " → ".join(a.upper() for a in remaining) if remaining else "ALREADY DONE"
+        self.log(f"Execution plan: {plan_str}")
 
         self.post_message(
             run_id=run_id,
@@ -200,118 +285,65 @@ class OrchestratorAgent(BaseAgent):
             },
         )
 
-    def _get_remaining_agents(self, status: str) -> list[str]:
-        """Return the ordered list of agents still to run."""
-        full_order = ["trend_scout", "narrator", "production", "publisher"]
-        agent_name = _STATUS_TO_AGENT.get(status)
-        if agent_name is None:
+    def _get_remaining_agents(self, status: str) -> List[str]:
+        """Return agents still to run based on current pipeline status."""
+        next_agent = _STATUS_TO_AGENT.get(status)
+        if next_agent is None:
             return []
         try:
-            start_idx = full_order.index(agent_name)
-            return full_order[start_idx:]
+            # For AWAITING_CRITIC, the next agent is critic
+            idx = _FULL_ORDER.index(next_agent)
+            return _FULL_ORDER[idx:]
         except ValueError:
             return []
 
     def _dispatch(
         self, agent_name: str, run_id: str, ctx: Dict[str, Any]
     ) -> AgentResult:
-        """Invoke a specialist agent with retry logic."""
+        """Invoke a specialist agent with 2-attempt retry and backoff."""
         agent = self._agents[agent_name]
-        max_retries = 2
-        last_error = None
 
-        for attempt in range(1, max_retries + 1):
+        for attempt in range(1, 3):
             try:
                 self.log(
                     f"Invoking {agent_name.upper()} "
-                    f"(attempt {attempt}/{max_retries})..."
+                    f"(attempt {attempt}/2)..."
                 )
-                result = agent.run(run_id=run_id, context=ctx)
-                return result
-            except Exception as e:
-                last_error = e
-                self.log(
-                    f"{agent_name.upper()} raised exception "
-                    f"(attempt {attempt}): {e}"
-                )
-                if attempt < max_retries:
+                return agent.run(run_id=run_id, context=dict(ctx))
+            except Exception as exc:
+                self.log(f"{agent_name.upper()} raised: {exc}")
+                if attempt < 2:
                     wait = 2 ** attempt
-                    self.log(f"Waiting {wait}s before retry...")
+                    self.log(f"Retrying in {wait}s...")
                     time.sleep(wait)
+                else:
+                    return AgentResult(
+                        success=False,
+                        reasoning=f"{agent_name} failed after 2 attempts.",
+                        errors=[str(exc)],
+                    )
 
-        return AgentResult(
-            success=False,
-            reasoning=f"Agent {agent_name} failed after {max_retries} attempts.",
-            errors=[str(last_error)],
-        )
+        # Unreachable but satisfies type checker
+        return AgentResult(success=False, errors=["dispatch exhausted"])
 
     def _reflect(self, agent_name: str, result: AgentResult) -> None:
         """Log the agent's reasoning after it completes."""
         status = "✓" if result.success else "✗"
         self.log(
-            f"[REFLECT] {agent_name.upper()} {status}: {result.reasoning[:120]}"
+            f"[REFLECT] {agent_name.upper()} {status}: "
+            f"{result.reasoning[:140]}"
         )
         if result.errors:
             self.log(f"[REFLECT] Non-fatal issues: {result.errors}")
 
-    def _advance_status(
-        self,
-        agent_name: str,
-        run_id: str,
-        result: AgentResult,
-        ctx: Dict[str, Any],
-    ) -> str:
-        """Update pipeline status after an agent completes and refresh ctx."""
-        if agent_name == "trend_scout":
-            topic = result.output.get("topic", "")
-            # Update the placeholder topic in DB
-            self._update_topic(run_id, topic)
-            ctx["topic"] = topic
-            # Narrator is next — mark as still PENDING (narrator will advance)
-            # We use a virtual status to prevent re-running TrendScout on resume
-            self.state.update_status(run_id, "TOPIC_FOUND")
-            return "TOPIC_FOUND"
-
-        elif agent_name == "narrator":
-            scenes = result.output.get("scenes", [])
-            self.state.save_scenes(run_id, scenes)
-            self.state.update_status(run_id, "NARRATED")
-            ctx["scenes"] = scenes
-            return "NARRATED"
-
-        elif agent_name == "production":
-            image_paths = result.output.get("image_paths", [])
-            audio_map = result.output.get("audio_map", {})
-            self.state.save_image_paths(run_id, image_paths)
-            self.state.save_audio_map(run_id, audio_map)
-            self.state.update_status(run_id, "AUDIO_DONE")
-            ctx["image_paths"] = image_paths
-            ctx["audio_map"] = audio_map
-            return "AUDIO_DONE"
-
-        elif agent_name == "publisher":
-            final_path = result.output.get("final_path", "")
-            if final_path:
-                self.state.save_final_path(run_id, final_path)
-            self.state.mark_done(run_id)
-            return "DONE"
-
-        return self.state.get_run_status(run_id)
-
     def _update_topic(self, run_id: str, topic: str) -> None:
-        """Update the topic field on the pipeline_runs row."""
+        """Update the topic field on pipeline_runs for the TBD placeholder."""
         import sqlite3
         import config as cfg
         conn = sqlite3.connect(cfg.DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute(
+        conn.execute(
             "UPDATE pipeline_runs SET topic = ? WHERE run_id = ?",
             (topic, run_id),
         )
         conn.commit()
         conn.close()
-
-
-# ── Extend status map for TOPIC_FOUND (new intermediate state) ─────────────────
-
-_STATUS_TO_AGENT["TOPIC_FOUND"] = "narrator"

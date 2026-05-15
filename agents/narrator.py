@@ -1,54 +1,41 @@
 # agents/narrator.py
 """
-NarratorAgent — deep-reasoning script writer.
+NarratorAgent — scene writer, grounded in research and brief.
 
-This agent uses a two-step LLM process to satisfy the "decompose, plan,
-and reflect" requirement:
+After Task 2, the Narrator's responsibility narrows to one focused task:
+given a fully-specified ContentBrief (from PlannerAgent) and a ResearchBrief
+(from ResearchAgent), write exactly 5 scenes that execute on the plan.
 
-  Step 1 — Scene Plan:
-    Ask the LLM to reason about the topic: what angle to take, what the
-    emotional arc should be, which facts are most surprising/viral. The
-    output is a free-form strategic plan (not yet scenes).
+The internal mini-planning step from Task 1 is retired — that cognitive work
+now lives in PlannerAgent where it belongs. The Narrator is now a specialist
+executor, not a planner.
 
-  Step 2 — Scene Writing:
-    Feed the strategic plan back as context and ask the LLM to write
-    the actual 5 structured scenes. This two-pass approach yields
-    significantly better scene quality than a single-shot prompt.
+It also handles revision feedback: if the Orchestrator passes revision_feedback
+in context (from a prior CriticAgent cycle), the Narrator injects that feedback
+into the scene-writing prompt and re-drafts.
 
 Blackboard messages consumed:
-  TOPIC_SELECTED  { topic, rationale }
+  CONTENT_BRIEF      { chosen_angle, emotional_arc, visual_motif,
+                       research_facts, research_stats, key_insight }
+  RESEARCH_COMPLETE  { facts, stats, key_insight }
+  REVISION_REQUESTED { feedback } (present only during revision cycles)
 
 Blackboard messages produced:
-  SCENE_PLAN      { plan_text }
-  NARRATIVE_READY { scenes: List[dict] }
+  NARRATIVE_DRAFT  { scenes, topic, attempt }
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agents.base import AgentResult, BaseAgent
 from modules.narrator import _parse_scenes
-from providers.llm import generate, LLMError
-from state import PipelineState
+from providers.llm import generate
 
-
-_SCENE_PLAN_SYSTEM = """You are a senior content strategist for a viral short-form video channel.
-
-Your job is to PLAN (not write) a 5-scene video about the given topic.
-
-Think deeply and answer:
-1. What is the single most surprising/counterintuitive angle on this topic?
-2. What emotional journey should the viewer take across 5 scenes?
-3. What are the 3 most compelling facts or stats about this topic?
-4. What visual metaphor or motif would tie all 5 scenes together?
-5. What call-to-action or takeaway should scene 5 leave the viewer with?
-
-Write your plan in plain text, 150-200 words. Be specific and opinionated."""
 
 _SCENE_WRITE_SYSTEM = """You are a master storyteller creating engaging short-form video content.
 
-Return ONLY a raw JSON array, no markdown, no backticks, no preamble whatsoever.
+Return ONLY a raw JSON array — no markdown, no backticks, no preamble whatsoever.
 
 Generate exactly 5 scenes with this exact schema:
 {
@@ -59,115 +46,155 @@ Generate exactly 5 scenes with this exact schema:
 }
 
 Rules:
-- scene_id 1 narration MUST start with one of: "nobody mentions this", "pause for a second", "here's the real truth", "let me save you hours", "this may surprise you", "I just figured this out"
+- scene_id 1 narration MUST start with one of: "nobody mentions this",
+  "pause for a second", "here's the real truth", "let me save you hours",
+  "this may surprise you", "I just figured this out"
 - All narrations are SHORT: 1-2 sentences max, punchy, first-person
-- Total narration across all 5 scenes should be ~30 seconds when spoken
-- visual_prompt: Create a brief visual description for an image (2-4 words max), then append ", premium minimalist aesthetic, clean composition, 9:16 vertical frame, soft bokeh background, teal-and-orange color grade, photorealistic, 4K"
-- motion_directive must be one of: "slow zoom in", "gentle pan right", "slow zoom out", "gentle pan left", "static"
-
-IMPORTANT: Do NOT include the words "STYLE_LOCK" in your response. Just create the visual prompts directly with the style appended."""
+- Total narration across all 5 scenes should be ~30 seconds when spoken (60-90 words)
+- visual_prompt: 2-4 word concrete image description, then append:
+  ", premium minimalist aesthetic, clean composition, 9:16 vertical frame,
+  soft bokeh background, teal-and-orange color grade, photorealistic, 4K"
+- motion_directive must be exactly one of: "slow zoom in", "gentle pan right",
+  "slow zoom out", "gentle pan left", "static"
+- Each scene should serve its designated emotional beat from the arc provided"""
 
 
 class NarratorAgent(BaseAgent):
     """
-    Writes the 5-scene video script using a two-step reasoning process.
+    Writes 5 scenes grounded in the ContentBrief and ResearchBrief.
 
-    Step 1 generates a strategic content plan (angle, arc, facts, motif).
-    Step 2 uses that plan as rich context to write the actual scene JSON.
-    This mirrors how a real content team works: strategy first, execution second.
+    On revision cycles, the Critic's feedback is injected into the prompt
+    alongside the original brief, so the Narrator understands exactly what
+    to fix rather than guessing.
     """
 
     name = "narrator"
 
     def run(self, run_id: str, context: Dict[str, Any]) -> AgentResult:
-        self.log("Starting narrative generation (2-step reasoning)...")
+        revision_count: int = context.get("revision_count", 0)
+        revision_feedback: str = context.get("revision_feedback", "")
+        is_revision = revision_count > 0
 
-        # Read topic from blackboard (prefer blackboard over context dict
-        # so that even on resume, we get the original rationale as context)
-        topic_msg = self.get_latest(run_id, "TOPIC_SELECTED")
-        if topic_msg:
-            topic = topic_msg["payload"]["topic"]
-            topic_rationale = topic_msg["payload"].get("rationale", "")
-        else:
-            topic = context.get("topic", "technology trends")
-            topic_rationale = ""
-
-        self.log(f"Topic: '{topic}'")
-
-        # ── Step 1: Strategic scene plan ─────────────────────────────────────
-        self.log("Step 1/2 — Drafting strategic content plan...")
-        plan_text = self._generate_plan(topic, topic_rationale)
-        self.log(f"Plan drafted ({len(plan_text.split())} words)")
-
-        self.post_message(
-            run_id=run_id,
-            msg_type="SCENE_PLAN",
-            payload={"plan_text": plan_text, "topic": topic},
+        self.log(
+            f"Writing scenes "
+            f"({'revision ' + str(revision_count) if is_revision else 'first draft'})..."
         )
 
-        # ── Step 2: Write actual scenes informed by the plan ──────────────────
-        self.log("Step 2/2 — Writing 5 scenes from strategic plan...")
-        scenes = self._generate_scenes(topic, plan_text)
-        self.log(f"Scenes written: {len(scenes)} scenes")
+        # ── Load context from blackboard ──────────────────────────────────────
+        brief_msg = self.get_latest(run_id, "CONTENT_BRIEF")
+        research_msg = self.get_latest(run_id, "RESEARCH_COMPLETE")
+        topic_msg = self.get_latest(run_id, "TOPIC_SELECTED")
+
+        topic: str = context.get("topic", "technology")
+        if brief_msg:
+            topic = brief_msg["payload"].get("topic", topic)
+        elif topic_msg:
+            topic = topic_msg["payload"].get("topic", topic)
+
+        brief: Dict = brief_msg["payload"] if brief_msg else {}
+        research: Dict = research_msg["payload"] if research_msg else {}
+
+        # If revision, also read feedback from blackboard as a fallback
+        if is_revision and not revision_feedback:
+            rev_msg = self.get_latest(run_id, "REVISION_REQUESTED")
+            if rev_msg:
+                revision_feedback = rev_msg["payload"].get("feedback", "")
+
+        self.log(f"Topic: '{topic}'")
+        if is_revision:
+            self.log(f"Revision feedback: {revision_feedback[:120]}")
+
+        # ── Build prompt and write scenes ─────────────────────────────────────
+        user_prompt = self._build_prompt(topic, brief, research, revision_feedback)
+        scenes = self._write_scenes(user_prompt)
 
         for s in scenes:
             self.log(
-                f"  Scene {s['scene_id']}: [{s['motion_directive']}] "
-                f"'{s['narration'][:60]}...'"
+                f"  Scene {s['scene_id']} [{s['motion_directive']}]: "
+                f"'{s['narration'][:70]}...'"
             )
 
         self.post_message(
             run_id=run_id,
-            msg_type="NARRATIVE_READY",
-            payload={"scenes": scenes, "topic": topic},
-            recipient="production",
+            msg_type="NARRATIVE_DRAFT",
+            payload={"scenes": scenes, "topic": topic, "attempt": revision_count},
+            recipient="critic",
         )
 
         return AgentResult(
             success=True,
             output={"scenes": scenes, "topic": topic},
-            next_agent="production",
+            next_agent="critic",
             reasoning=(
-                f"Generated {len(scenes)} scenes via 2-step reasoning. "
-                f"Plan: {plan_text[:100]}..."
+                f"Wrote {len(scenes)} scenes (attempt {revision_count}). "
+                f"Grounded in {'ContentBrief + research' if brief else 'topic only'}."
             ),
         )
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    def _generate_plan(self, topic: str, rationale: str) -> str:
-        """Step 1: Generate the strategic content plan."""
-        context_note = f"\n\nAudience context: {rationale}" if rationale else ""
-        user_prompt = f"Plan a viral short-form video about: {topic}{context_note}"
+    def _build_prompt(
+        self,
+        topic: str,
+        brief: Dict[str, Any],
+        research: Dict[str, Any],
+        revision_feedback: str,
+    ) -> str:
+        """Construct a rich, grounded scene-writing prompt."""
+        parts = [f"Write 5 scenes for a short video about: {topic}\n"]
 
-        try:
-            return generate(_SCENE_PLAN_SYSTEM, user_prompt)
-        except Exception as e:
-            self.log(f"Plan generation failed: {e} — using minimal plan")
-            return (
-                f"Topic: {topic}. Focus on the most surprising aspect. "
-                f"Build from hook → education → insight → example → CTA."
+        if brief.get("chosen_angle"):
+            parts.append(f"Chosen angle: {brief['chosen_angle']}")
+
+        if brief.get("visual_motif"):
+            parts.append(f"Visual motif: {brief['visual_motif']}")
+
+        if brief.get("emotional_arc"):
+            arc_lines = [
+                f"  Scene {b['beat']} ({b['label']}): {b['emotional_goal']}"
+                for b in brief["emotional_arc"]
+            ]
+            parts.append("Emotional arc:\n" + "\n".join(arc_lines))
+
+        facts = research.get("facts") or brief.get("research_facts", [])
+        stats = research.get("stats") or brief.get("research_stats", [])
+        if facts:
+            parts.append(
+                "Ground your narration in these real facts:\n"
+                + "\n".join(f"  • {f}" for f in facts[:4])
+            )
+        if stats:
+            parts.append(
+                "Incorporate at least one of these statistics:\n"
+                + "\n".join(f"  • {s}" for s in stats[:2])
             )
 
-    def _generate_scenes(self, topic: str, plan: str) -> List[Dict]:
-        """Step 2: Write the 5 structured scenes using the plan as context."""
-        user_prompt = (
-            f"Using this strategic plan as your guide:\n\n{plan}\n\n"
-            f"Now write the 5 scenes for the video about: {topic}"
-        )
+        if research.get("key_insight") or brief.get("key_insight"):
+            insight = research.get("key_insight") or brief.get("key_insight")
+            parts.append(f"Key insight to convey: {insight}")
 
-        errors = []
-        for attempt in range(3):
+        if revision_feedback:
+            parts.append(
+                f"\n⚠ REVISION INSTRUCTIONS (apply these specifically):\n"
+                f"{revision_feedback}"
+            )
+
+        return "\n\n".join(parts)
+
+    def _write_scenes(self, user_prompt: str) -> List[Dict]:
+        """Write 5 scenes with up to 3 parse attempts."""
+        errors: List[str] = []
+
+        for attempt in range(1, 4):
             try:
                 raw = generate(_SCENE_WRITE_SYSTEM, user_prompt)
                 scenes = _parse_scenes(raw)
                 if len(scenes) == 5:
                     return scenes
-                errors.append(f"Attempt {attempt+1}: got {len(scenes)} scenes")
+                errors.append(f"Attempt {attempt}: got {len(scenes)} scenes")
+                self.log(f"  Parse attempt {attempt} got {len(scenes)} scenes — retrying")
             except Exception as e:
-                errors.append(f"Attempt {attempt+1}: {e}")
-                self.log(f"Scene write attempt {attempt+1} failed: {e}")
+                errors.append(f"Attempt {attempt}: {e}")
+                self.log(f"  Parse attempt {attempt} failed: {e}")
 
-        raise RuntimeError(
-            f"NarratorAgent failed after 3 attempts: {errors}"
-        )
+        raise RuntimeError(f"NarratorAgent failed after 3 attempts: {errors}")

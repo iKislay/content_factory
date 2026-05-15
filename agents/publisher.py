@@ -48,7 +48,12 @@ class PublisherAgent(BaseAgent):
 
         # ── Load assets from blackboard ────────────────────────────────────────
         production_msg = self.get_latest(run_id, "PRODUCTION_DONE")
-        narrative_msg = self.get_latest(run_id, "NARRATIVE_READY")
+        # Prefer NARRATIVE_APPROVED (post-Critic); fall back for legacy runs
+        narrative_msg = (
+            self.get_latest(run_id, "NARRATIVE_APPROVED")
+            or self.get_latest(run_id, "NARRATIVE_DRAFT")
+            or self.get_latest(run_id, "NARRATIVE_READY")  # legacy
+        )
 
         if not production_msg:
             return AgentResult(

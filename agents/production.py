@@ -51,8 +51,13 @@ class ProductionAgent(BaseAgent):
     def run(self, run_id: str, context: Dict[str, Any]) -> AgentResult:
         self.log("Starting async production fan-out...")
 
-        # Read scenes from blackboard
-        narrative_msg = self.get_latest(run_id, "NARRATIVE_READY")
+        # Read scenes from blackboard — prefer NARRATIVE_APPROVED (post-Critic)
+        # Fall back to NARRATIVE_DRAFT for backward compatibility
+        narrative_msg = (
+            self.get_latest(run_id, "NARRATIVE_APPROVED")
+            or self.get_latest(run_id, "NARRATIVE_DRAFT")
+            or self.get_latest(run_id, "NARRATIVE_READY")  # legacy
+        )
         if narrative_msg:
             scenes = narrative_msg["payload"]["scenes"]
         else:

@@ -9,6 +9,10 @@ GROQ_MODEL = "llama-3.3-70b-versatile"
 OLLAMA_BASE_URL = "http://localhost:11434"
 OLLAMA_MODEL = "llama3.2"
 
+# Google Cloud TTS Configuration
+GOOGLE_CLOUD_TTS_API_KEY = os.getenv("GOOGLE_CLOUD_TTS_API_KEY", "")
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+
 IMAGE_PROVIDER = "pollinations"
 POLLINATIONS_BASE = "https://image.pollinations.ai/prompt"
 IMAGE_WIDTH = 1024
@@ -31,3 +35,8 @@ DB_PATH = "state.db"
 # Agent configuration
 MAX_PRODUCTION_WORKERS = 3   # concurrent threads for image + audio fan-out
 AGENT_LOG_LEVEL = "INFO"     # structured agent logging level
+
+# Reasoning & quality control
+CRITIC_MIN_SCORE = 7         # overall score below which Critic requests revision (1-10)
+MAX_REVISION_CYCLES = 2      # max Narrator→Critic revision loops before forcing approval
+RESEARCH_MAX_RESULTS = 6     # DuckDuckGo results per search query

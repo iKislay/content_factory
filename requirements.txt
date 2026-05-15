@@ -9,3 +9,4 @@ tenacity
 soundfile
 Pillow
 numpy
+duckduckgo-search
