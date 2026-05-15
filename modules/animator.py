@@ -4,6 +4,11 @@ import subprocess
 from typing import List, Dict
 import config
 
+try:
+    import static_ffmpeg
+    static_ffmpeg.add_paths()
+except ImportError:
+    pass
 
 class AnimatorError(Exception):
     """Exception raised when animation fails."""

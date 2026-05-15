@@ -5,6 +5,7 @@ python-dotenv
 kokoro-onnx
 moviepy
 ffmpeg-python
+static-ffmpeg
 tenacity
 soundfile
 Pillow

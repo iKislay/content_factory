@@ -3,6 +3,11 @@ import os
 from typing import List, Dict
 import config
 
+try:
+    import static_ffmpeg
+    static_ffmpeg.add_paths()
+except ImportError:
+    pass
 
 def compile_video(
     video_paths: List[str],
