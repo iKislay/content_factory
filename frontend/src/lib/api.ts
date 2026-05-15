@@ -89,6 +89,13 @@ export const api = {
     } catch (e) { console.error(e); return { total_runs: 0, completed_runs: 0, success_rate: 0 }; }
   },
 
+  async cancelRun(runId: string): Promise<boolean> {
+    try {
+      const res = await fetch(`${API_BASE}/runs/${runId}/cancel`, { method: 'POST' });
+      return res.ok;
+    } catch (e) { console.error(e); return false; }
+  },
+
   async startRun(topic: string, autoApprove: boolean = false, persona: string = "The Analyst", mode: string = "video", platform?: string): Promise<{run_id: string} | null> {
     try {
       const res = await fetch(`${API_BASE}/runs`, {

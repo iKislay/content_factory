@@ -783,7 +783,7 @@ AGENT_DEPENDENCY_GRAPH = {
     },
     "trend_scout": {
         "name": "Trend Scout",
-        "description": "Discovers trending topics from Google Trends",
+        "description": "Discovers trending topics from Google Trends or RSS feeds",
         "depends_on": ["orchestrator"],
         "outputs": ["topic", "topic_metadata"]
     },
@@ -795,20 +795,32 @@ AGENT_DEPENDENCY_GRAPH = {
     },
     "planner": {
         "name": "Planner Agent",
-        "description": "Content strategy: audience, angle, arc, motif",
+        "description": "Content strategy: audience, angle, arc, motif or platform-specific viral DNA",
         "depends_on": ["research"],
         "outputs": ["audience", "angle", "arc", "motif", "content_plan"]
     },
     "narrator": {
         "name": "Narrator Agent",
-        "description": "Scene-by-scene narrative generation with grounding",
+        "description": "Scene-by-scene narrative generation with grounding (Video Mode)",
         "depends_on": ["planner"],
         "outputs": ["scenes", "narrative_script", "grounding_status"]
     },
+    "text_narrator": {
+        "name": "Text Narrator",
+        "description": "Platform-native text generation (LinkedIn/Twitter) with viral DNA grounding",
+        "depends_on": ["planner"],
+        "outputs": ["text_content", "platform_format"]
+    },
     "critic": {
         "name": "Critic Agent",
-        "description": "Quality scoring and revision loop",
+        "description": "Quality scoring and revision loop for video scripts",
         "depends_on": ["narrator"],
+        "outputs": ["score", "feedback", "revision_needed"]
+    },
+    "text_critic": {
+        "name": "Text Critic",
+        "description": "Quality scoring and platform authenticity check for text content",
+        "depends_on": ["text_narrator"],
         "outputs": ["score", "feedback", "revision_needed"]
     },
     "production": {
@@ -822,6 +834,12 @@ AGENT_DEPENDENCY_GRAPH = {
         "description": "Animation, compilation, and Discord publishing",
         "depends_on": ["production"],
         "outputs": ["video_path", "discord_message"]
+    },
+    "text_publisher": {
+        "name": "Text Publisher",
+        "description": "Exporting text content to Markdown or platform APIs",
+        "depends_on": ["text_critic"],
+        "outputs": ["output_path", "content_preview"]
     }
 }
 

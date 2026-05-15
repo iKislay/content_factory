@@ -93,6 +93,15 @@ function useRunPolling(runId: string | null) {
         } else {
           setIsWaiting(false);
         }
+      } else if (r && r.status === 'TEXT_AWAITING_APPROVAL') {
+        const pendingMsg = m.find(msg => msg.msg_type === 'TEXT_AWAITING_APPROVAL');
+        const alreadyResponded = m.some(msg => msg.msg_type === 'USER_INPUT');
+        if (pendingMsg && !alreadyResponded) {
+          setScriptScenes(pendingMsg.payload.content ? [{ scene_id: 1, narration: pendingMsg.payload.content, visual_prompt: '' }] : []);
+          setIsWaiting(true);
+        } else {
+          setIsWaiting(false);
+        }
       } else if (r && r.status === 'STYLE_AWAITING_APPROVAL') {
         const pendingMsg = m.find(msg => msg.msg_type === 'STYLE_AWAITING_APPROVAL');
         const alreadyResponded = m.some(msg => msg.msg_type === 'USER_INPUT');
@@ -142,7 +151,7 @@ function useRunPolling(runId: string | null) {
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [runId, poll]);
 
-  return { run, messages, isWaiting, topics, topicRationale, poll, liveStatus };
+  return { run, messages, isWaiting, topics, topicRationale, scriptScenes, visualStyles, poll, liveStatus };
 }
 
 // ─── Status helpers ───────────────────────────────────────────────────────────
@@ -517,7 +526,7 @@ function HistoryView({ onViewRun, onDeleteAll, onDeleted, stats }: { onViewRun: 
 // ─── Run Detail View ──────────────────────────────────────────────────────────
 
 function RunDetailView({ runId, onBack }: { runId: string; onBack: () => void }) {
-  const { run, messages, isWaiting, topics, topicRationale, poll, liveStatus } = useRunPolling(runId);
+  const { run, messages, isWaiting, topics, topicRationale, scriptScenes, visualStyles, poll, liveStatus } = useRunPolling(runId);
 
   const handleApprove = async (selectedTopic: string, autoApprove?: boolean) => {
     if (selectedTopic === '') {
@@ -781,7 +790,7 @@ export default function App() {
   const [stats, setStats] = useState<{total_runs: number; completed_runs: number; success_rate: number}>({ total_runs: 0, completed_runs: 0, success_rate: 0 });
 
   // Use the shared polling hook for the active run
-  const { run, messages, isWaiting, topics, topicRationale, poll, liveStatus } = useRunPolling(activeRunId);
+  const { run, messages, isWaiting, topics, topicRationale, scriptScenes, visualStyles, poll, liveStatus } = useRunPolling(activeRunId);
 
   // ── URL hash routing ────────────────────────────────────────────────────────
 
