@@ -20,6 +20,9 @@ export interface Run {
   time_ago?: string;
   is_running?: boolean;
   status_label?: string;
+  mode?: string;          // 'video' | 'text'
+  platform?: string;      // 'linkedin' | 'twitter'
+  text_content?: string;  // populated for text-mode runs after DONE
 }
 
 export interface Scene {

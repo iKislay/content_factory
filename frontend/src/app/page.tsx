@@ -172,7 +172,12 @@ function statusBadge(status: string) {
   return <span className="badge badge-running"><span className="pulse-dot pulse-dot-amber" />{status.replace(/_/g, ' ')}</span>;
 }
 
-function statusProgress(status: string): number {
+function statusProgress(status: string, mode?: string): number {
+  if (mode === 'text') {
+    const order = ['PENDING','TOPIC_FOUND','RESEARCHED','PLANNED','TEXT_REVIEW','TEXT_PUBLISHED','DONE'];
+    const idx = order.indexOf(status);
+    return idx < 0 ? 0 : Math.round((idx / (order.length - 1)) * 100);
+  }
   const order = ['PENDING','TOPIC_FOUND','RESEARCHED','PLANNED','AWAITING_CRITIC','NARRATED','AUDIO_DONE','DONE'];
   const idx = order.indexOf(status);
   return idx < 0 ? 0 : Math.round((idx / (order.length - 1)) * 100);
@@ -235,9 +240,98 @@ function LiveImageGrid({ runId, status }: { runId: string; status: string }) {
   );
 }
 
-// ─── Final Output Card ────────────────────────────────────────────────────────
+// ─── Text Final Output ────────────────────────────────────────────────────────
 
-function FinalOutput({ run }: { run: Run }) {
+function TextFinalOutput({ run }: { run: Run }) {
+  const [copied, setCopied] = useState(false);
+  const content = run.text_content || '';
+  const platform = run.platform || 'linkedin';
+  const platformLabel = platform === 'twitter' ? 'X / Twitter' : 'LinkedIn';
+  const platformEmoji = platform === 'twitter' ? '𝕏' : '💼';
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // fallback for older browsers
+      const ta = document.createElement('textarea');
+      ta.value = content;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  return (
+    <div className="animate-in" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--spacing-xl)' }}>
+      {/* Hero completion card */}
+      <div className="feature-card feature-card-lavender">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 16 }}>
+          <div>
+            <span className="caption-upper" style={{ color: 'rgba(255,255,255,0.6)', display: 'block', marginBottom: 6 }}>
+              {platformEmoji} {platformLabel} Post Ready
+            </span>
+            <h2 className="display-sm" style={{ color: 'white', marginBottom: 8 }}>"{run.topic}"</h2>
+            <p className="body-sm" style={{ color: 'rgba(255,255,255,0.75)' }}>
+              Your post has been crafted and quality-checked by AI agents.
+            </p>
+          </div>
+          <span className="badge badge-done">✓ Done</span>
+        </div>
+      </div>
+
+      {/* Generated Post Card */}
+      <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+        {/* Header bar */}
+        <div style={{
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          padding: '14px 20px',
+          borderBottom: '1px solid var(--hairline)',
+          backgroundColor: 'var(--surface-strong)',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 18 }}>{platformEmoji}</span>
+            <span className="title-sm">{platformLabel} Post</span>
+            <span className="caption" style={{ color: 'var(--muted)' }}>{content.length} chars</span>
+          </div>
+          <button
+            id="copy-post-btn"
+            className="btn-secondary"
+            style={{ padding: '6px 16px', height: 'auto', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}
+            onClick={handleCopy}
+          >
+            {copied ? '✓ Copied!' : '📋 Copy Post'}
+          </button>
+        </div>
+
+        {/* Post content */}
+        <div style={{
+          padding: '20px 24px',
+          whiteSpace: 'pre-wrap',
+          lineHeight: 1.75,
+          fontFamily: 'inherit',
+          fontSize: 15,
+          color: 'var(--ink)',
+          maxHeight: 600,
+          overflowY: 'auto',
+        }}>
+          {content || (
+            <span style={{ color: 'var(--muted)', fontStyle: 'italic' }}>No content available. The LLM may have failed — check logs.</span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Video Final Output Card ──────────────────────────────────────────────────
+
+function VideoFinalOutput({ run }: { run: Run }) {
   const scenes = run.scenes || [];
 
   return (
@@ -324,7 +418,7 @@ function ActiveRunView({
   onCancel?: () => void;
   liveStatus?: { currentAgent: string; activity: string; progress: number } | null;
 }) {
-  const pct = statusProgress(run.status);
+  const pct = statusProgress(run.status, run.mode);
   const isDone = run.status === 'DONE';
   const isTerminal = run.status === 'DONE' || run.status === 'FAILED' || run.status === 'CANCELLED';
 
@@ -477,8 +571,8 @@ function ActiveRunView({
         />
       )}
 
-      {/* Live images during production */}
-      {(run.status === 'NARRATED' || run.status === 'AUDIO_DONE' || imageDoneMsgs.length > 0) && (
+      {/* Live images during production — video mode only */}
+      {run.mode !== 'text' && (run.status === 'NARRATED' || run.status === 'AUDIO_DONE' || imageDoneMsgs.length > 0) && (
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--spacing-md)' }}>
             <h3 className="title-md">Images Generating Live</h3>
@@ -488,8 +582,9 @@ function ActiveRunView({
         </div>
       )}
 
-      {/* If done show full output */}
-      {isDone && <FinalOutput run={run} />}
+      {/* If done show full output — branched by mode */}
+      {isDone && run.mode === 'text' && <TextFinalOutput run={run} />}
+      {isDone && run.mode !== 'text' && <VideoFinalOutput run={run} />}
 
       {/* Activity log */}
       <div>
