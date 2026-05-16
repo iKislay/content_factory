@@ -1,0 +1,3 @@
+{
+  "builds": [{ "src": "frontend/next.config.ts", "use": "@vercel/next" }]
+}
