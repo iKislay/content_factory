@@ -17,6 +17,7 @@ Blackboard messages produced:
 from __future__ import annotations
 
 import os
+import sqlite3
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -76,6 +77,9 @@ class TextPublisherAgent(BaseAgent):
         
         # Generate preview
         preview = self._generate_preview(content, platform)
+
+        # Save text content to DB so API can serve it to frontend
+        self._save_to_db(run_id, content, platform, output_path)
 
         self.log(f"Published to: {output_path}")
 
@@ -148,3 +152,23 @@ run_id: {run_id}
         preview_content = preview_content.replace("\n", "\\n")
         
         return template.format(content=preview_content)
+
+    def _save_to_db(self, run_id: str, content: str, platform: str, output_path: str) -> None:
+        """Persist text content and output path to pipeline_runs table."""
+        try:
+            conn = sqlite3.connect(config.DB_PATH)
+            # Ensure text_content column exists
+            try:
+                conn.execute("ALTER TABLE pipeline_runs ADD COLUMN text_content TEXT")
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+            conn.execute(
+                "UPDATE pipeline_runs SET final_path = ?, text_content = ?, updated_at = ? WHERE run_id = ?",
+                (output_path, content, datetime.now().isoformat(), run_id),
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            self.log(f"Warning: could not save text to DB: {e}")
