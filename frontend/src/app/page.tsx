@@ -74,7 +74,10 @@ function useRunPolling(runId: string | null) {
 
       if (r && r.status === 'TOPIC_AWAITING_APPROVAL') {
         const pendingMsg = m.find(msg => msg.msg_type === 'TOPIC_AWAITING_APPROVAL');
-        const alreadyResponded = m.some(msg => msg.msg_type === 'USER_INPUT');
+        // Only show if there's no USER_INPUT that came AFTER the pending message
+        const alreadyResponded = pendingMsg
+          ? m.some(msg => msg.msg_type === 'USER_INPUT' && msg.created_at > pendingMsg.created_at)
+          : false;
         if (pendingMsg && !alreadyResponded) {
           const payload = pendingMsg.payload;
           if (payload.topics) setTopics(payload.topics);
@@ -86,7 +89,9 @@ function useRunPolling(runId: string | null) {
         }
       } else if (r && r.status === 'SCRIPT_AWAITING_APPROVAL') {
         const pendingMsg = m.find(msg => msg.msg_type === 'SCRIPT_AWAITING_APPROVAL');
-        const alreadyResponded = m.some(msg => msg.msg_type === 'USER_INPUT');
+        const alreadyResponded = pendingMsg
+          ? m.some(msg => msg.msg_type === 'USER_INPUT' && msg.created_at > pendingMsg.created_at)
+          : false;
         if (pendingMsg && !alreadyResponded) {
           setScriptScenes(pendingMsg.payload.scenes || []);
           setIsWaiting(true);
@@ -95,7 +100,9 @@ function useRunPolling(runId: string | null) {
         }
       } else if (r && r.status === 'TEXT_AWAITING_APPROVAL') {
         const pendingMsg = m.find(msg => msg.msg_type === 'TEXT_AWAITING_APPROVAL');
-        const alreadyResponded = m.some(msg => msg.msg_type === 'USER_INPUT');
+        const alreadyResponded = pendingMsg
+          ? m.some(msg => msg.msg_type === 'USER_INPUT' && msg.created_at > pendingMsg.created_at)
+          : false;
         if (pendingMsg && !alreadyResponded) {
           setScriptScenes(pendingMsg.payload.content ? [{ scene_id: 1, narration: pendingMsg.payload.content, visual_prompt: '' }] : []);
           setIsWaiting(true);
@@ -104,7 +111,9 @@ function useRunPolling(runId: string | null) {
         }
       } else if (r && r.status === 'STYLE_AWAITING_APPROVAL') {
         const pendingMsg = m.find(msg => msg.msg_type === 'STYLE_AWAITING_APPROVAL');
-        const alreadyResponded = m.some(msg => msg.msg_type === 'USER_INPUT');
+        const alreadyResponded = pendingMsg
+          ? m.some(msg => msg.msg_type === 'USER_INPUT' && msg.created_at > pendingMsg.created_at)
+          : false;
         if (pendingMsg && !alreadyResponded) {
           const styles = await api.getVisualStyles();
           setVisualStyles(styles);
@@ -407,6 +416,56 @@ function ActiveRunView({
         />
       )}
 
+      {/* Text Content Review */}
+      {isWaitingForUser && run.status === 'TEXT_AWAITING_APPROVAL' && scriptScenes && scriptScenes.length > 0 && (
+        <div className="modal-overlay">
+          <div className="modal-container animate-in" style={{ maxWidth: 680 }}>
+            <div style={{ padding: 'var(--spacing-xl)', borderBottom: '1px solid var(--hairline)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 'var(--spacing-sm)' }}>
+                <div>
+                  <span className="caption-upper" style={{ color: 'var(--muted)', display: 'block', marginBottom: 4 }}>Review Required</span>
+                  <h2 className="display-sm">Review Generated Post</h2>
+                </div>
+                <div className="badge badge-pending">
+                  <span className="pulse-dot pulse-dot-amber" />
+                  Human-in-the-loop
+                </div>
+              </div>
+              <p className="body-sm" style={{ color: 'var(--muted)' }}>Your AI-generated post is ready. Review it before publishing.</p>
+            </div>
+            <div style={{ padding: 'var(--spacing-xl)' }}>
+              <div style={{
+                backgroundColor: 'var(--surface-soft)',
+                border: '1px solid var(--hairline)',
+                borderRadius: 'var(--rounded-md)',
+                padding: 'var(--spacing-lg)',
+                lineHeight: 1.7,
+                fontSize: 15,
+                color: 'var(--ink)',
+                whiteSpace: 'pre-wrap',
+                maxHeight: '50vh',
+                overflowY: 'auto',
+              }}>
+                {scriptScenes[0].narration}
+              </div>
+              <p className="caption" style={{ color: 'var(--muted)', marginTop: 8 }}>
+                {scriptScenes[0].narration.length} characters
+              </p>
+            </div>
+            <div style={{
+              padding: 'var(--spacing-lg) var(--spacing-xl)',
+              backgroundColor: 'var(--surface-soft)',
+              display: 'flex', gap: 'var(--spacing-md)', justifyContent: 'flex-end',
+              borderTop: '1px solid var(--hairline)',
+              borderRadius: '0 0 var(--rounded-xl) var(--rounded-xl)',
+            }}>
+              <button className="btn-secondary" onClick={onReject}>↻ Regenerate</button>
+              <button className="btn-primary" onClick={() => onApprove('', false)}>Publish Post →</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Visual Style Selector */}
       {isWaitingForUser && run.status === 'STYLE_AWAITING_APPROVAL' && visualStyles && (
         <VisualStyleSelector
@@ -664,6 +723,19 @@ function GeneratorView({ onStartRun }: { onStartRun: (id: string) => void }) {
               ))}
             </div>
           </div>
+
+          <label className="toggle-row" style={{ marginBottom: 'var(--spacing-lg)' }}>
+            <input
+              type="checkbox"
+              checked={autoApprove}
+              onChange={e => setAutoApprove(e.target.checked)}
+            />
+            <div>
+              <p className="title-sm">Auto-Approve Mode</p>
+              <p className="body-sm" style={{ color: 'var(--muted)' }}>Fully autonomous — skip the review step and publish immediately</p>
+            </div>
+          </label>
+
           <button 
             className="btn-primary" 
             style={{ width: '100%' }} 

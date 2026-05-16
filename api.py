@@ -197,6 +197,7 @@ def update_scenes(run_id: str, req: dict):
 @app.post("/api/runs/{run_id}/visual-style")
 def set_visual_style(run_id: str, req: dict):
     style = req.get("style", "minimalist")
+    provider = req.get("provider", "pollinations")
     conn = get_db_connection()
     cursor = conn.execute("SELECT status FROM pipeline_runs WHERE run_id = ?", (run_id,))
     row = cursor.fetchone()
@@ -209,13 +210,14 @@ def set_visual_style(run_id: str, req: dict):
     conn.close()
     
     import sqlite3 as sqllib
+    import uuid
     conn2 = sqllib.connect(config.DB_PATH)
     conn2.execute("INSERT OR REPLACE INTO agent_messages (id, run_id, sender, msg_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                  (str(uuid.uuid4()), run_id, "USER", "VISUAL_STYLE_SELECTED", json.dumps({"style": style}), datetime.now().isoformat()))
+                  (str(uuid.uuid4()), run_id, "USER", "VISUAL_STYLE_SELECTED", json.dumps({"style": style, "provider": provider}), datetime.now().isoformat()))
     conn2.commit()
     conn2.close()
     
-    return {"status": "ok", "style": style}
+    return {"status": "ok", "style": style, "provider": provider}
 
 @app.post("/api/runs/{run_id}/regenerate-image/{scene_id}")
 def regenerate_image(run_id: str, scene_id: int, background_tasks: BackgroundTasks):
@@ -574,6 +576,7 @@ class ApprovalRequest(BaseModel):
     auto_approve: Optional[bool] = None
     edited_scenes: Optional[List[dict]] = None
     selected_style: Optional[str] = None
+    selected_provider: Optional[str] = None
 
 @app.post("/api/runs/{run_id}/approve")
 def approve_step(run_id: str, req: ApprovalRequest):
@@ -584,6 +587,7 @@ def approve_step(run_id: str, req: ApprovalRequest):
         "auto_approve": req.auto_approve,
         "edited_scenes": req.edited_scenes,
         "selected_style": req.selected_style,
+        "selected_provider": req.selected_provider,
     }
     
     conn = get_db_connection()

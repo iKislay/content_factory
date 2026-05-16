@@ -157,6 +157,9 @@ class OrchestratorAgent(BaseAgent):
             "text_critic":  TextCriticAgent(state),
             "text_publisher": TextPublisherAgent(state),
         }
+        # Track the last USER_INPUT message we consumed so we never re-process it.
+        # Using None means "accept the first USER_INPUT we see".
+        self._last_consumed_user_input_id: Optional[str] = None
 
     # ── Main entry point ──────────────────────────────────────────────────────
 
@@ -302,13 +305,15 @@ class OrchestratorAgent(BaseAgent):
             if current_status == "STYLE_AWAITING_APPROVAL":
                 user_input = self._wait_for_approval(run_id, "STYLE_APPROVAL")
                 selected_style = user_input.get("selected_style", "minimalist")
+                selected_provider = user_input.get("selected_provider", config.IMAGE_PROVIDER)
                 ctx["visual_style"] = selected_style
+                ctx["image_provider"] = selected_provider
                 self.post_message(
                     run_id=run_id,
                     msg_type="VISUAL_STYLE_SELECTED",
-                    payload={"style": selected_style}
+                    payload={"style": selected_style, "provider": selected_provider}
                 )
-                self.log(f"Visual style selected: {selected_style}")
+                self.log(f"Visual style selected: {selected_style}, provider: {selected_provider}")
                 self.state.update_status(run_id, "NARRATED")
                 status = "NARRATED"
                 continue
@@ -895,29 +900,26 @@ class OrchestratorAgent(BaseAgent):
 
     def _wait_for_approval(self, run_id: str, approval_type: str) -> dict:
         """Generic polling for any approval type.
-        
-        CRITICAL: Tracks the last-consumed message ID so the same USER_INPUT
-        row is never returned twice. Without this, the orchestrator loops
-        infinitely re-reading the same approval message.
+
+        Uses an instance-level consumed-ID tracker so each USER_INPUT message
+        is processed exactly once — no re-reads, no missed fast clicks.
         """
         import time
         max_wait = 600
         poll_interval = 2
         elapsed = 0
-        # Remember the ID of the most-recent USER_INPUT that existed BEFORE we
-        # started waiting, so we only act on messages that arrive AFTER this point.
-        sentinel_msg = self.state.get_latest_message(run_id, "USER_INPUT")
-        sentinel_id = sentinel_msg["id"] if sentinel_msg else None
 
         while elapsed < max_wait:
             current_status = self.state.get_run_status(run_id)
             if current_status in ("CANCELLED", "FAILED"):
                 return {"action": "cancel"}
             user_msg = self.state.get_latest_message(run_id, "USER_INPUT")
-            if user_msg and user_msg["id"] != sentinel_id:
+            if user_msg and user_msg["id"] != self._last_consumed_user_input_id:
                 payload = user_msg.get("payload", {})
                 action = payload.get("action", "")
                 if action in ("approve", "reject"):
+                    # Mark this message as consumed before returning
+                    self._last_consumed_user_input_id = user_msg["id"]
                     return payload
             time.sleep(poll_interval)
             elapsed += poll_interval
