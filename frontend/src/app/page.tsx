@@ -319,7 +319,7 @@ function ActiveRunView({
   rationale?: string;
   scriptScenes?: {scene_id: number; narration: string; visual_prompt: string}[];
   visualStyles?: {id: string; name: string; description: string}[];
-  onApprove: (t: string, auto?: boolean) => void;
+  onApprove: (t: string, auto?: boolean, scenes?: any[], style?: string, provider?: string) => void;
   onReject: () => void;
   onCancel?: () => void;
   liveStatus?: { currentAgent: string; activity: string; progress: number } | null;
@@ -470,9 +470,9 @@ function ActiveRunView({
       {isWaitingForUser && run.status === 'STYLE_AWAITING_APPROVAL' && visualStyles && (
         <VisualStyleSelector
           styles={visualStyles}
-          onApprove={(style) => {
-            api.setVisualStyle(run.run_id, style);
-            onApprove('', false);
+          onApprove={(style, provider) => {
+            api.setVisualStyle(run.run_id, style, provider as string);
+            onApprove('', false, undefined, style, provider as string);
           }}
         />
       )}
@@ -587,12 +587,8 @@ function HistoryView({ onViewRun, onDeleteAll, onDeleted, stats }: { onViewRun: 
 function RunDetailView({ runId, onBack }: { runId: string; onBack: () => void }) {
   const { run, messages, isWaiting, topics, topicRationale, scriptScenes, visualStyles, poll, liveStatus } = useRunPolling(runId);
 
-  const handleApprove = async (selectedTopic: string, autoApprove?: boolean) => {
-    if (selectedTopic === '') {
-      await api.approveStep(runId, 'approve', undefined, autoApprove);
-    } else {
-      await api.approveStep(runId, 'approve', selectedTopic, autoApprove);
-    }
+  const handleApprove = async (selectedTopic: string, autoApprove?: boolean, editedScenes?: any[], selectedStyle?: string, selectedProvider?: string) => {
+    await api.approveStep(runId, 'approve', selectedTopic || undefined, autoApprove, editedScenes, selectedStyle, selectedProvider);
     setTimeout(poll, 800);
   };
 
@@ -917,13 +913,9 @@ export default function App() {
     setView('run');
   };
 
-  const handleApprove = async (selectedTopic: string, autoApprove?: boolean) => {
+  const handleApprove = async (selectedTopic: string, autoApprove?: boolean, editedScenes?: any[], selectedStyle?: string, selectedProvider?: string) => {
     if (activeRunId) {
-      if (selectedTopic === '') {
-        await api.approveStep(activeRunId, 'approve', undefined, autoApprove);
-      } else {
-        await api.approveStep(activeRunId, 'approve', selectedTopic, autoApprove);
-      }
+      await api.approveStep(activeRunId, 'approve', selectedTopic || undefined, autoApprove, editedScenes, selectedStyle, selectedProvider);
       setTimeout(poll, 800);
     }
   };

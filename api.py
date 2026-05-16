@@ -7,6 +7,7 @@ import os
 import asyncio
 import threading
 import base64
+import uuid
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from collections import defaultdict

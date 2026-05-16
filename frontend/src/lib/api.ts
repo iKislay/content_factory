@@ -108,12 +108,19 @@ export const api = {
     } catch (e) { console.error(e); return null; }
   },
 
-  async approveStep(runId: string, action: 'approve' | 'reject', selectedTopic?: string, autoApprove?: boolean): Promise<boolean> {
+  async approveStep(runId: string, action: 'approve' | 'reject', selectedTopic?: string, autoApprove?: boolean, editedScenes?: any[], selectedStyle?: string, selectedProvider?: string): Promise<boolean> {
     try {
       const res = await fetch(`${API_BASE}/runs/${runId}/approve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, selected_topic: selectedTopic, auto_approve: autoApprove }),
+        body: JSON.stringify({ 
+          action, 
+          selected_topic: selectedTopic, 
+          auto_approve: autoApprove,
+          edited_scenes: editedScenes,
+          selected_style: selectedStyle,
+          selected_provider: selectedProvider
+        }),
       });
       return res.ok;
     } catch (e) { console.error(e); return false; }
@@ -164,12 +171,12 @@ async deleteAllRuns(): Promise<boolean> {
     } catch (e) { console.error(e); return false; }
   },
 
-  async setVisualStyle(runId: string, style: string): Promise<boolean> {
+  async setVisualStyle(runId: string, style: string, provider?: string): Promise<boolean> {
     try {
       const res = await fetch(`${API_BASE}/runs/${runId}/visual-style`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ style }),
+        body: JSON.stringify({ style, provider }),
       });
       return res.ok;
     } catch (e) { console.error(e); return false; }

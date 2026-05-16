@@ -145,6 +145,10 @@ class TrendScoutAgent(BaseAgent):
 
         executor = self.make_executor(run_id)
 
+        # Initialize here so the except path and source= line never hit UnboundLocalError
+        all_calls: list = []
+        all_results: list = []
+
         try:
             if base_topic:
                 user_prompt = f"""[CRITICAL INSTRUCTION: DO NOT CALL get_trending_topic. Skip step 1 of your system instructions entirely.]
