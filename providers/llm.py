@@ -81,37 +81,44 @@ def _groq_generate_with_key(system_prompt: str, user_prompt: str, api_key: str, 
 
 
 def _ollama_generate(system_prompt: str, user_prompt: str, api_key: str = "", key_num: Optional[int] = None) -> str:
-    """Generate using Ollama streaming API with optional key."""
+    """Generate using Ollama Cloud API (ollama.com) with optional key."""
     import requests as _requests
 
-    url = f"{config.OLLAMA_BASE_URL}/api/generate"
-    headers = {}
+    # Ollama Cloud uses OpenAI-compatible /api/chat endpoint
+    base = config.OLLAMA_BASE_URL.rstrip("/")
+    url = f"{base}/api/chat"
+    
+    headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    
+
     payload = {
         "model": config.OLLAMA_MODEL,
-        "prompt": f"System: {system_prompt}\n\nUser: {user_prompt}",
-        "stream": True,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "stream": False,
     }
-    
+
     key_info = f" (key {key_num})" if key_num else ""
-    print(f"[LLM] Trying ollama{key_info}...")
-    
+    print(f"[LLM] Trying ollama cloud{key_info} model={config.OLLAMA_MODEL}...")
+
     response = _requests.post(url, json=payload, headers=headers, timeout=120)
+    if response.status_code == 401:
+        raise LLMError(f"Ollama Cloud: Unauthorized (bad key?)")
     if response.status_code != 200:
-        raise LLMError(f"Ollama returned status {response.status_code}")
+        raise LLMError(f"Ollama Cloud returned status {response.status_code}: {response.text[:200]}")
 
-    full_text = ""
-    for line in response.iter_lines():
-        if line:
-            data = line.decode("utf-8")
-            if data.startswith("{"):
-                chunk = json.loads(data)
-                if "response" in chunk:
-                    full_text += chunk["response"]
-
-    return full_text.strip()
+    data = response.json()
+    # Response format: {"message": {"role": "assistant", "content": "..."}}
+    content = data.get("message", {}).get("content", "")
+    if not content:
+        # Fallback: check choices (OpenAI-compat)
+        choices = data.get("choices", [])
+        if choices:
+            content = choices[0].get("message", {}).get("content", "")
+    return content.strip()
 
 
 # ─── Agentic tool-use loop ─────────────────────────────────────────────────────

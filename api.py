@@ -415,6 +415,10 @@ def get_run(run_id: str):
     run_dict['status_label'] = _get_status_label(run_dict['status'])
     run_dict['is_running'] = run_dict['status'] not in ("DONE", "CANCELLED", "FAILED")
     run_dict['time_ago'] = _time_ago(run_dict.get('created_at', ''))
+    # Include text content for text-mode runs (may be None for video runs)
+    run_dict['text_content'] = run_dict.get('text_content') or None
+    run_dict['mode'] = run_dict.get('mode') or 'video'
+    run_dict['platform'] = run_dict.get('platform') or 'linkedin'
     return run_dict
 
 @app.get("/api/runs/{run_id}/images")
