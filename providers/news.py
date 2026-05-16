@@ -1,6 +1,6 @@
 # providers/news.py
 """
-DuckDuckGo News search provider using the ddgs library.
+DuckDuckGo News search provider supporting multiple library names (ddgs, duckduckgo_search).
 """
 
 from __future__ import annotations
@@ -39,19 +39,30 @@ class NewsArticle:
             "url": self.url,
         }
 
+def _get_ddgs_client():
+    """Try to import DDGS from ddgs or duckduckgo_search."""
+    try:
+        from ddgs import DDGS
+        return DDGS
+    except ImportError:
+        try:
+            from duckduckgo_search import DDGS
+            return DDGS
+        except ImportError:
+            return None
+
 def search_news(topic: str, max_results: int = 5) -> List[NewsArticle]:
     """
     Search DuckDuckGo News for recent articles about *topic*.
     """
-    try:
-        from ddgs import DDGS
-    except ImportError:
-        print("[NEWS] ddgs not installed")
+    DDGS_Class = _get_ddgs_client()
+    if not DDGS_Class:
+        print("[NEWS] DuckDuckGo library not found (tried ddgs and duckduckgo_search)")
         return []
 
     for attempt in range(3):
         try:
-            with DDGS() as ddgs:
+            with DDGS_Class() as ddgs:
                 raw = list(ddgs.news(topic, max_results=max_results))
 
             if not raw:

@@ -193,8 +193,19 @@ Search for recent news, trends, or developments related to '{base_topic}' to fin
                         )
             
             topics_data = self._parse_response(final_text)
-            topic = topics_data[0]["topic"] if topics_data else "TBD"
-            rationale = topics_data[0]["rationale"] if topics_data else ""
+            
+            # Ensure we don't return TBD if we can avoid it
+            if not topics_data or (len(topics_data) == 1 and topics_data[0]["topic"] == "TBD"):
+                self.log("No valid topics parsed from LLM response or got TBD — using fallback")
+                if base_topic:
+                    topic = base_topic
+                    rationale = f"Proceeding with requested topic: {base_topic}"
+                else:
+                    topic, rationale = self._fallback_topic()
+                topics_data = [{"topic": topic, "rationale": rationale}]
+            else:
+                topic = topics_data[0]["topic"]
+                rationale = topics_data[0]["rationale"]
         except Exception as e:
             self.log(f"Tool-use failed: {e} — using fallback discovery")
             if base_topic:
@@ -203,6 +214,11 @@ Search for recent news, trends, or developments related to '{base_topic}' to fin
             else:
                 topic, rationale = self._fallback_topic()
             topics_data = [{"topic": topic, "rationale": rationale}]
+
+        # Final safety check: if everything somehow resulted in TBD or empty
+        if not topic or topic == "TBD":
+             topic, rationale = self._fallback_topic()
+             topics_data = [{"topic": topic, "rationale": rationale}]
 
         source = "tool_use" if all_calls else "fallback"
         self.log(f"Topics found: {[t['topic'] for t in topics_data]} ({source})")
