@@ -70,6 +70,12 @@ class TrendScoutAgent(BaseAgent):
         auto_keywords = ['auto-discover', 'find topic', 'discover', 'trending', 'generate topic']
         is_auto_topic = user_provided_topic and any(kw in user_provided_topic.lower() for kw in auto_keywords)
         
+        # Determine base_topic BEFORE any usage (was previously used before being defined — NameError bug)
+        base_topic = None
+        if user_provided_topic and user_provided_topic.strip() and not is_auto_topic:
+            base_topic = user_provided_topic.strip()
+            self.log(f"User provided base topic: '{base_topic}' — finding related angles...")
+        
         # Check RSS feeds availability
         rss_feed_ids = getattr(config, "RSS_APP_FEED_IDS", [])
         has_rss_feeds = rss_feed_ids and any(fid.strip() for fid in rss_feed_ids if fid.strip())
@@ -97,16 +103,11 @@ class TrendScoutAgent(BaseAgent):
                     )
             except Exception as rss_err:
                 self.log(f"RSS feed fetch failed: {rss_err} — falling back to search")
-        
-        base_topic = None
-        if user_provided_topic and user_provided_topic.strip() and user_provided_topic != "TBD" and not is_auto_topic:
-            base_topic = user_provided_topic.strip()
-            self.log(f"User provided base topic: '{base_topic}' — finding related angles...")
 
         # Resume path — only if not a fresh run with base_topic
         # Check if this is actually a resumed run by looking at existing messages
         previous_msg = self.get_latest(run_id, "TOPIC_SELECTED")
-        is_resumed = previous_msg is not None and context.get("topic") and context["topic"] != "TBD" and context["topic"] != "" and not base_topic
+        is_resumed = previous_msg is not None and context.get("topic") and context["topic"] != "" and not base_topic
         
         if is_resumed:
             topic = context["topic"]
@@ -194,9 +195,9 @@ Search for recent news, trends, or developments related to '{base_topic}' to fin
             
             topics_data = self._parse_response(final_text)
             
-            # Ensure we don't return TBD if we can avoid it
-            if not topics_data or (len(topics_data) == 1 and topics_data[0]["topic"] == "TBD"):
-                self.log("No valid topics parsed from LLM response or got TBD — using fallback")
+            # Ensure we got valid topics from the LLM
+            if not topics_data:
+                self.log("No valid topics parsed from LLM response — using fallback")
                 if base_topic:
                     topic = base_topic
                     rationale = f"Proceeding with requested topic: {base_topic}"
@@ -215,10 +216,14 @@ Search for recent news, trends, or developments related to '{base_topic}' to fin
                 topic, rationale = self._fallback_topic()
             topics_data = [{"topic": topic, "rationale": rationale}]
 
-        # Final safety check: if everything somehow resulted in TBD or empty
-        if not topic or topic == "TBD":
-             topic, rationale = self._fallback_topic()
-             topics_data = [{"topic": topic, "rationale": rationale}]
+        # Final safety check: if LLM returned nothing useful, fall back to user's keyword
+        if not topic:
+            if base_topic:
+                topic = base_topic
+                rationale = f"Using your requested topic: {base_topic}"
+            else:
+                topic, rationale = self._fallback_topic()
+            topics_data = [{"topic": topic, "rationale": rationale}]
 
         source = "tool_use" if all_calls else "fallback"
         self.log(f"Topics found: {[t['topic'] for t in topics_data]} ({source})")
