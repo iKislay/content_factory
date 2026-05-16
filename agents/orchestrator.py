@@ -220,13 +220,14 @@ class OrchestratorAgent(BaseAgent):
                     errors=[f"Pipeline cancelled by user" if current_status == "CANCELLED" else "Pipeline failed"],
                 )
 
-            if status == "TOPIC_AWAITING_APPROVAL":
+            if current_status == "TOPIC_AWAITING_APPROVAL":
                 user_input = self._wait_for_topic_approval(run_id)
                 if user_input.get("action") == "reject":
                     self.log("Topic rejected by user — re-running TrendScout")
                     # Clear topic from context and database so TrendScout does fresh discovery
                     ctx["topic"] = ""
                     self._update_topic(run_id, "")
+                    self.state.update_status(run_id, "PENDING")
                     status = "PENDING"
                     continue
                 
@@ -254,7 +255,7 @@ class OrchestratorAgent(BaseAgent):
                 continue
 
             # Script review decision point (after Critic approves - video mode)
-            if status == "SCRIPT_AWAITING_APPROVAL":
+            if current_status == "SCRIPT_AWAITING_APPROVAL":
                 user_input = self._wait_for_approval(run_id, "SCRIPT_APPROVAL")
                 if user_input.get("action") == "reject":
                     self.log("Script rejected — sending back for revision")
@@ -275,7 +276,7 @@ class OrchestratorAgent(BaseAgent):
                 continue
             
             # Text review decision point (after TextCritic approves - text mode)
-            if status == "TEXT_AWAITING_APPROVAL":
+            if current_status == "TEXT_AWAITING_APPROVAL":
                 user_input = self._wait_for_approval(run_id, "TEXT_APPROVAL")
                 if user_input.get("action") == "reject":
                     self.log("Text content rejected — sending back for revision")
@@ -291,7 +292,7 @@ class OrchestratorAgent(BaseAgent):
                 continue
 
             # Visual style decision point (before Production)
-            if status == "STYLE_AWAITING_APPROVAL":
+            if current_status == "STYLE_AWAITING_APPROVAL":
                 user_input = self._wait_for_approval(run_id, "STYLE_APPROVAL")
                 selected_style = user_input.get("selected_style", "minimalist")
                 ctx["visual_style"] = selected_style
@@ -304,7 +305,7 @@ class OrchestratorAgent(BaseAgent):
                 status = "NARRATED"
                 continue
 
-            next_agent_name = status_to_agent.get(status)
+            next_agent_name = status_to_agent.get(current_status)
 
             if next_agent_name is None:
                 self.log(f"Run {run_id[:8]} is {status} — pipeline complete.")
@@ -392,7 +393,7 @@ class OrchestratorAgent(BaseAgent):
 
             status = self._advance_status(next_agent_name, run_id, result, ctx)
 
-            if status == "DONE":
+            if current_status == "DONE":
                 break
 
         final_path = self.state.get_final_path(run_id)

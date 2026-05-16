@@ -1,23 +1,19 @@
 # providers/search.py
 """
-DuckDuckGo web search provider.
-
-No API key required. Resilient by design: rate-limit or network errors are
-caught and retried with exponential backoff. If all 3 attempts fail, returns
-an empty list instead of raising — the pipeline degrades gracefully.
+Robust web search provider using DuckDuckGo (via ddgs or duckduckgo_search) with Bing fallback.
 """
 
 from __future__ import annotations
 
 import time
+import requests
 from dataclasses import dataclass
 from typing import List
-
+from bs4 import BeautifulSoup
 
 @dataclass
 class SearchResult:
     """A single web search result."""
-
     title: str
     snippet: str
     url: str
@@ -33,46 +29,88 @@ class SearchResult:
             parts.append(f"URL: {self.url}")
         return "\n".join(parts)
 
+def _get_ddgs_client():
+    """Try to import DDGS from ddgs or duckduckgo_search."""
+    try:
+        from ddgs import DDGS
+        return DDGS
+    except ImportError:
+        try:
+            from duckduckgo_search import DDGS
+            return DDGS
+        except ImportError:
+            return None
 
 def search(query: str, max_results: int = 6) -> List[SearchResult]:
     """
-    Search DuckDuckGo and return up to max_results results.
-
-    Args:
-        query:       Search query string.
-        max_results: Maximum number of results to return.
-
-    Returns:
-        List of SearchResult (empty list on total failure, not an exception).
+    Search using DuckDuckGo and fallback to Bing scraping.
     """
-    try:
-        from duckduckgo_search import DDGS
-    except ImportError:
-        raise ImportError(
-            "duckduckgo-search not installed. Run: pip install duckduckgo-search"
-        )
-
-    last_exc: Exception | None = None
-
-    for attempt in range(3):
+    print(f"[SEARCH] Searching for: '{query}'")
+    
+    # 1. Try DuckDuckGo
+    DDGS_Class = _get_ddgs_client()
+    if DDGS_Class:
         try:
-            with DDGS() as ddgs:
+            with DDGS_Class() as ddgs:
                 raw = list(ddgs.text(query, max_results=max_results))
+                
+            if raw:
+                print(f"[SEARCH] DuckDuckGo returned {len(raw)} results")
+                return [
+                    SearchResult(
+                        title=r.get("title", ""),
+                        snippet=r.get("body", ""),
+                        url=r.get("href", ""),
+                    )
+                    for r in raw
+                ]
+        except Exception as e:
+            print(f"[SEARCH] DuckDuckGo failed: {e}")
+    else:
+        print("[SEARCH] DuckDuckGo library not found (tried ddgs and duckduckgo_search)")
 
-            return [
-                SearchResult(
-                    title=r.get("title", ""),
-                    snippet=r.get("body", ""),
-                    url=r.get("href", ""),
-                )
-                for r in raw
-                if r.get("title") or r.get("body")
-            ]
-
-        except Exception as exc:
-            last_exc = exc
-            if attempt < 2:
-                time.sleep(2 ** attempt)
-
-    print(f"[SEARCH] All 3 attempts failed for '{query}': {last_exc}")
+    # 2. Try Bing fallback
+    try:
+        print(f"[SEARCH] Trying Bing fallback...")
+        results = _bing_search(query, max_results)
+        if results:
+            print(f"[SEARCH] Bing returned {len(results)} results")
+            return results
+    except Exception as e:
+        print(f"[SEARCH] Bing fallback failed: {e}")
+    
+    print(f"[SEARCH] All search attempts failed for '{query}'")
     return []
+
+def _bing_search(query: str, max_results: int) -> List[SearchResult]:
+    """Scrape Bing search results as a robust fallback."""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+    }
+    # Use a slightly different URL for better results
+    url = f'https://www.bing.com/search?q={requests.utils.quote(query)}&count={max_results}'
+    r = requests.get(url, headers=headers, timeout=10)
+    r.raise_for_status()
+    
+    soup = BeautifulSoup(r.text, 'html.parser')
+    results = []
+    
+    # Bing often uses 'li.b_algo' for results
+    for g in soup.find_all('li', class_='b_algo'):
+        if len(results) >= max_results:
+            break
+            
+        a = g.find('a')
+        # Snippet can be in different tags
+        p = g.find('p') or g.find('div', class_='b_caption') or g.find('span', class_='st')
+        
+        if a and a.get('href'):
+            title = a.text.strip()
+            url = a['href']
+            snippet = p.text.strip() if p else ""
+            
+            if title and url:
+                results.append(SearchResult(title=title, snippet=snippet, url=url))
+            
+    return results

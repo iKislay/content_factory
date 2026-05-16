@@ -10,7 +10,7 @@ tenacity
 soundfile
 Pillow
 numpy
-duckduckgo-search
+googlesearch-python
 fastapi
 uvicorn
 pydantic

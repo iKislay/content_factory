@@ -31,11 +31,12 @@ _SCOUT_SYSTEM = """You are a trend analyst for a viral short-form video channel.
 
 Your task: find the top 3 best topics to create a video about RIGHT NOW.
 
-IMPORTANT PRIORITY ORDER:
-1. FIRST: Call fetch_rss_feed to get latest items from monitored RSS feeds (if feed IDs are configured)
-2. If RSS feeds are empty or unavailable, THEN call get_trending_topic to see what's trending
-3. Call web_search with potential topics to verify they are interesting and have good video potential
-4. Based on what you find, decide on the 3 best topics
+IMPORTANT PRIORITY ORDER for topic discovery:
+1. FIRST: Call fetch_platform_trends with platform='twitter' and topic='general' to get latest trending posts from Twitter/X
+2. If Twitter returns nothing, try fetch_platform_trends with platform='linkedin' and topic='technology'
+3. If platform trends unavailable, call get_trending_topic from Google Trends
+4. Use web_search to verify topics have recent news and are video-worthy
+5. Based on what you find, decide on the 3 best topics
 
 When you have chosen your final topics, respond with ONLY this text:
 TOPIC 1: <the chosen topic 1>
@@ -68,6 +69,34 @@ class TrendScoutAgent(BaseAgent):
         
         auto_keywords = ['auto-discover', 'find topic', 'discover', 'trending', 'generate topic']
         is_auto_topic = user_provided_topic and any(kw in user_provided_topic.lower() for kw in auto_keywords)
+        
+        # Check RSS feeds availability
+        rss_feed_ids = getattr(config, "RSS_APP_FEED_IDS", [])
+        has_rss_feeds = rss_feed_ids and any(fid.strip() for fid in rss_feed_ids if fid.strip())
+        
+        # Priority: RSS feeds first (if available and not user-forced specific topic)
+        if has_rss_feeds and not base_topic:
+            self.log(f"Using RSS feeds as primary source (feeds: {rss_feed_ids})")
+            from providers.rss_app import get_all_feeds_items
+            try:
+                rss_items = get_all_feeds_items([fid.strip() for fid in rss_feed_ids if fid.strip()], max_items_per_feed=5)
+                if rss_items:
+                    self.log(f"RSS feeds returned {len(rss_items)} items — using as primary source")
+                    rss_topics = [
+                        {"topic": item.title, "rationale": f"From RSS feed: {item.source or 'monitored source'}"}
+                        for item in rss_items[:3]
+                    ]
+                    topic = rss_topics[0]["topic"]
+                    rationale = rss_topics[0]["rationale"]
+                    self._post_selected(run_id, topic, rationale, "rss_feed", "IN", topics=rss_topics)
+                    return AgentResult(
+                        success=True,
+                        output={"topic": topic, "rationale": rationale, "topics": rss_topics},
+                        next_agent="research",
+                        reasoning=f"Found {len(rss_topics)} topics via RSS feeds",
+                    )
+            except Exception as rss_err:
+                self.log(f"RSS feed fetch failed: {rss_err} — falling back to search")
         
         base_topic = None
         if user_provided_topic and user_provided_topic.strip() and user_provided_topic != "TBD" and not is_auto_topic:
@@ -106,32 +135,12 @@ class TrendScoutAgent(BaseAgent):
 
         available_tools = [
             registry.get("fetch_rss_feed"),
+            registry.get("fetch_platform_trends"),
             registry.get("get_trending_topic"),
             registry.get("web_search"),
         ]
 
-        rss_feed_ids = getattr(config, "RSS_APP_FEED_IDS", [])
-        has_rss_feeds = rss_feed_ids and any(fid.strip() for fid in rss_feed_ids if fid.strip())
-
-        if has_rss_feeds and not base_topic:
-            self.log(f"Attempting direct RSS feed fetch first (feeds: {rss_feed_ids})")
-            from providers.rss_app import get_all_feeds_items
-            rss_items = get_all_feeds_items([fid.strip() for fid in rss_feed_ids if fid.strip()], max_items_per_feed=3)
-            if rss_items:
-                self.log(f"RSS feeds returned {len(rss_items)} items — using as primary source")
-                rss_topics = [
-                    {"topic": item.title, "rationale": f"From RSS feed: {item.source or 'monitored source'}"}
-                    for item in rss_items[:3]
-                ]
-                topic = rss_topics[0]["topic"]
-                rationale = rss_topics[0]["rationale"]
-                self._post_selected(run_id, topic, rationale, "rss_feed", "IN", topics=rss_topics)
-                return AgentResult(
-                    success=True,
-                    output={"topic": topic, "rationale": rationale, "topics": rss_topics},
-                    next_agent="research",
-                    reasoning=f"Found {len(rss_topics)} topics via RSS feeds",
-                )
+        # RSS check already done at start - removed duplicate
 
         executor = self.make_executor(run_id)
 
@@ -166,14 +175,22 @@ Search for recent news, trends, or developments related to '{base_topic}' to fin
             if base_topic:
                 search_empty = self._check_search_results_empty(all_results)
                 if search_empty:
-                    self.log(f"No search results found for user topic '{base_topic}' — requesting alternative from user")
-                    return AgentResult(
-                        success=False,
-                        output={"topic": base_topic, "reason": "no_search_results"},
-                        errors=[f"No search results found for '{base_topic}'. Please try a different topic."],
-                        reasoning=f"Topic '{base_topic}' has no search results - cannot proceed with hallucinated content",
-                        next_agent=None,
-                    )
+                    # Try a broader search approach
+                    broader_query = f"{base_topic} latest news 2026"
+                    from providers.search import search as do_search
+                    broader_results = do_search(broader_query, max_results=3)
+                    if broader_results:
+                        self.log(f"Broader search '{broader_query}' returned {len(broader_results)} results")
+                    else:
+                        # All search methods exhausted - fail with clear message
+                        self.log(f"Search failed for '{base_topic}' — showing error to user")
+                        return AgentResult(
+                            success=False,
+                            output={"topic": base_topic, "reason": "no_search_results"},
+                            errors=[f"Could not find any results for '{base_topic}'. Please try a different topic."],
+                            reasoning=f"Search failed for user topic",
+                            next_agent=None,
+                        )
             
             topics_data = self._parse_response(final_text)
             topic = topics_data[0]["topic"] if topics_data else "TBD"
