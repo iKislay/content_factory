@@ -399,6 +399,14 @@ class ProductionAgent(BaseAgent):
         prompt = scene["visual_prompt"]
         call_id = str(uuid.uuid4())[:8]
 
+        # Get visual style and provider from blackboard
+        style_msg = self.get_latest(run_id, "VISUAL_STYLE_SELECTED")
+        provider = style_msg.get("payload", {}).get("provider") if style_msg else None
+        style = style_msg.get("payload", {}).get("style", "minimalist") if style_msg else "minimalist"
+        
+        # Enhance prompt with style
+        styled_prompt = f"{prompt}, {style} style, premium minimalist aesthetic, clean composition, 9:16 vertical video"
+
         # Log intent before the blocking API call
         self.post_message(
             run_id=run_id,
@@ -406,7 +414,7 @@ class ProductionAgent(BaseAgent):
             payload={
                 "agent": self.name,
                 "tool_name": "generate_image",
-                "arguments": {"prompt": prompt[:80] + "...", "scene_id": scene_id},
+                "arguments": {"prompt": styled_prompt[:80] + "...", "scene_id": scene_id, "provider": provider},
                 "call_id": call_id,
             },
         )
@@ -416,7 +424,7 @@ class ProductionAgent(BaseAgent):
 
         t0 = time.monotonic()
         try:
-            path = image_provider.generate_image(prompt, scene_id, config.TEMP_DIR)
+            path = image_provider.generate_image(styled_prompt, scene_id, config.TEMP_DIR, provider=provider)
             duration_ms = round((time.monotonic() - t0) * 1000, 1)
             self.post_message(
                 run_id=run_id,

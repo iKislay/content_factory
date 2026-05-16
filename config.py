@@ -19,6 +19,9 @@ GOOGLE_CLOUD_TTS_API_KEY = os.getenv("GOOGLE_CLOUD_TTS_API_KEY", "")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 
 IMAGE_PROVIDER = "pollinations"
+GEMINI_API_KEY1 = os.getenv("GEMINI_API_KEY1", "")
+GEMINI_API_KEY2 = os.getenv("GEMINI_API_KEY2", "")
+GEMINI_API_KEY3 = os.getenv("GEMINI_API_KEY3", "")
 POLLINATIONS_BASE = "https://image.pollinations.ai/prompt"
 IMAGE_WIDTH = 1024
 IMAGE_HEIGHT = 1792

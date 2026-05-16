@@ -157,6 +157,9 @@ class OrchestratorAgent(BaseAgent):
             "text_critic":  TextCriticAgent(state),
             "text_publisher": TextPublisherAgent(state),
         }
+        # Track the last USER_INPUT message we consumed so we never re-process it.
+        # Using None means "accept the first USER_INPUT we see".
+        self._last_consumed_user_input_id: Optional[str] = None
 
     # ── Main entry point ──────────────────────────────────────────────────────
 
@@ -251,6 +254,8 @@ class OrchestratorAgent(BaseAgent):
                         msg_type="TOPIC_USER_APPROVED",
                         payload={"topic": ctx.get("topic")},
                     )
+                # *** Fix: update DB status so the next loop iteration routes correctly ***
+                self.state.update_status(run_id, "TOPIC_FOUND")
                 status = "TOPIC_FOUND"
                 continue
 
@@ -261,6 +266,7 @@ class OrchestratorAgent(BaseAgent):
                     self.log("Script rejected — sending back for revision")
                     ctx["revision_count"] = ctx.get("revision_count", 0) + 1
                     ctx["revision_feedback"] = user_input.get("feedback", "Script needs revision")
+                    self.state.update_status(run_id, "PLANNED")
                     status = "PLANNED"
                     continue
                 
@@ -272,6 +278,7 @@ class OrchestratorAgent(BaseAgent):
                     self.log("Script edited by user")
                 
                 self.post_message(run_id=run_id, msg_type="SCRIPT_APPROVED", payload={})
+                self.state.update_status(run_id, "NARRATED")
                 status = "NARRATED"
                 continue
             
@@ -282,12 +289,15 @@ class OrchestratorAgent(BaseAgent):
                     self.log("Text content rejected — sending back for revision")
                     ctx["revision_count"] = ctx.get("revision_count", 0) + 1
                     ctx["revision_feedback"] = user_input.get("feedback", "Content needs revision")
+                    self.state.update_status(run_id, "PLANNED")
                     status = "PLANNED"
                     continue
                 
                 # User approved - store the content
                 self.log("Text content approved by user")
                 self.post_message(run_id=run_id, msg_type="TEXT_USER_APPROVED", payload={})
+                # *** Fix: update DB status so the next loop iteration routes correctly ***
+                self.state.update_status(run_id, "TEXT_PUBLISHED")
                 status = "TEXT_PUBLISHED"
                 continue
 
@@ -295,13 +305,16 @@ class OrchestratorAgent(BaseAgent):
             if current_status == "STYLE_AWAITING_APPROVAL":
                 user_input = self._wait_for_approval(run_id, "STYLE_APPROVAL")
                 selected_style = user_input.get("selected_style", "minimalist")
+                selected_provider = user_input.get("selected_provider", config.IMAGE_PROVIDER)
                 ctx["visual_style"] = selected_style
+                ctx["image_provider"] = selected_provider
                 self.post_message(
                     run_id=run_id,
                     msg_type="VISUAL_STYLE_SELECTED",
-                    payload={"style": selected_style}
+                    payload={"style": selected_style, "provider": selected_provider}
                 )
-                self.log(f"Visual style selected: {selected_style}")
+                self.log(f"Visual style selected: {selected_style}, provider: {selected_provider}")
+                self.state.update_status(run_id, "NARRATED")
                 status = "NARRATED"
                 continue
 
@@ -678,8 +691,8 @@ class OrchestratorAgent(BaseAgent):
             conn.close()
             db_topic = (row[0] or "").strip() if row else ""
 
-            # Fallback: if DB topic is blank/TBD, check the blackboard message
-            if not db_topic or db_topic == "TBD":
+            # Fallback: if DB topic is blank, check the blackboard message
+            if not db_topic:
                 topic_msg = self.state.get_latest_message(run_id, "TOPIC_SELECTED")
                 db_topic = topic_msg["payload"]["topic"] if topic_msg else db_topic
 
@@ -693,7 +706,7 @@ class OrchestratorAgent(BaseAgent):
             )
             return pending["run_id"], True, pending["topic"]
 
-        placeholder_run_id = self.state.create_run("TBD")
+        placeholder_run_id = self.state.create_run("")
         self.log(f"New run created: {placeholder_run_id[:8]}")
         return placeholder_run_id, False, ""
 
@@ -870,7 +883,7 @@ class OrchestratorAgent(BaseAgent):
         self.log(f"[HANDOFF] {from_agent} → {to_agent}: {payload.get('topic', 'N/A')}")
 
     def _update_topic(self, run_id: str, topic: str) -> None:
-        """Update the topic field on pipeline_runs for the TBD placeholder."""
+        """Update the topic field on pipeline_runs."""
         import sqlite3
         import config as cfg
         conn = sqlite3.connect(cfg.DB_PATH)
@@ -886,20 +899,27 @@ class OrchestratorAgent(BaseAgent):
         return self._wait_for_approval(run_id, "topic")
 
     def _wait_for_approval(self, run_id: str, approval_type: str) -> dict:
-        """Generic polling for any approval type."""
+        """Generic polling for any approval type.
+
+        Uses an instance-level consumed-ID tracker so each USER_INPUT message
+        is processed exactly once — no re-reads, no missed fast clicks.
+        """
         import time
         max_wait = 600
         poll_interval = 2
         elapsed = 0
+
         while elapsed < max_wait:
             current_status = self.state.get_run_status(run_id)
             if current_status in ("CANCELLED", "FAILED"):
                 return {"action": "cancel"}
             user_msg = self.state.get_latest_message(run_id, "USER_INPUT")
-            if user_msg:
+            if user_msg and user_msg["id"] != self._last_consumed_user_input_id:
                 payload = user_msg.get("payload", {})
                 action = payload.get("action", "")
                 if action in ("approve", "reject"):
+                    # Mark this message as consumed before returning
+                    self._last_consumed_user_input_id = user_msg["id"]
                     return payload
             time.sleep(poll_interval)
             elapsed += poll_interval
