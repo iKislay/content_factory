@@ -319,25 +319,76 @@ class OrchestratorAgent(BaseAgent):
             self._reflect(next_agent_name, result)
 
             if not result.success:
-                self.log(
-                    f"[{next_agent_name.upper()}] failed: {result.errors}"
-                )
-                self.state.update_status(run_id, "FAILED")
-                self.post_message(
-                    run_id=run_id,
-                    msg_type="AGENT_FAILED",
-                    payload={
-                        "agent": next_agent_name,
-                        "errors": result.errors,
-                        "reasoning": result.reasoning,
-                    },
-                )
-                return AgentResult(
-                    success=False,
-                    output=result.output,
-                    reasoning=result.reasoning,
-                    errors=result.errors,
-                )
+                output = result.output or {}
+                failure_reason = output.get("reason", "")
+                
+                # Check if this is a "no sources" type failure - should ask user for new topic
+                should_retry = failure_reason in ("no_search_results", "no_sources_found", "insufficient_research_quality")
+                
+                if should_retry:
+                    error_msg = result.errors[0] if result.errors else "No sources found"
+                    self.log(f"[{next_agent_name.upper()}] failed with no sources: {error_msg}")
+                    
+                    # Post a message about the failure and wait for user to provide new topic
+                    self.post_message(
+                        run_id=run_id,
+                        msg_type="TOPIC_NEEDS_RETRY",
+                        payload={
+                            "original_topic": ctx.get("topic", ""),
+                            "reason": failure_reason,
+                            "error": error_msg,
+                        },
+                    )
+                    
+                    # Wait for user input with a new topic
+                    user_input = self._wait_for_topic_approval(run_id)
+                    
+                    if user_input.get("action") == "reject":
+                        self.log("User rejected retry - cancelling pipeline")
+                        self.state.update_status(run_id, "CANCELLED")
+                        return AgentResult(
+                            success=False,
+                            reasoning="User cancelled after topic failed",
+                            errors=["User cancelled"],
+                        )
+                    
+                    # Get new topic from user
+                    new_topic = user_input.get("selected_topic")
+                    if new_topic:
+                        ctx["topic"] = new_topic
+                        self._update_topic(run_id, new_topic)
+                        self.log(f"User provided new topic: '{new_topic}' - retrying from start")
+                        
+                        # Reset status to PENDING to restart from TrendScout
+                        status = "PENDING"
+                        continue
+                    else:
+                        # User approved to try auto-discovery
+                        ctx["topic"] = ""
+                        self._update_topic(run_id, "")
+                        status = "PENDING"
+                        continue
+                else:
+                    # Regular failure - fail the pipeline
+                    self.log(
+                        f"[{next_agent_name.upper()}] failed: {result.errors}"
+                    )
+                    self.state.update_status(run_id, "FAILED")
+                    self.post_message(
+                        run_id=run_id,
+                        msg_type="AGENT_FAILED",
+                        payload={
+                            "agent": next_agent_name,
+                            "errors": result.errors,
+                            "reasoning": result.reasoning,
+                        },
+                    )
+                    return AgentResult(
+                        success=False,
+                        output=result.output,
+                        reasoning=result.reasoning,
+                        errors=result.errors,
+                    )
 
             status = self._advance_status(next_agent_name, run_id, result, ctx)
 

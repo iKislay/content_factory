@@ -161,6 +161,20 @@ Search for recent news, trends, or developments related to '{base_topic}' to fin
                 executor=executor,
                 max_rounds=config.MAX_TOOL_ROUNDS,
             )
+            
+            # Validate: check if web_search returned any results for user-provided topics
+            if base_topic:
+                search_empty = self._check_search_results_empty(all_results)
+                if search_empty:
+                    self.log(f"No search results found for user topic '{base_topic}' — requesting alternative from user")
+                    return AgentResult(
+                        success=False,
+                        output={"topic": base_topic, "reason": "no_search_results"},
+                        errors=[f"No search results found for '{base_topic}'. Please try a different topic."],
+                        reasoning=f"Topic '{base_topic}' has no search results - cannot proceed with hallucinated content",
+                        next_agent=None,
+                    )
+            
             topics_data = self._parse_response(final_text)
             topic = topics_data[0]["topic"] if topics_data else "TBD"
             rationale = topics_data[0]["rationale"] if topics_data else ""
@@ -207,6 +221,15 @@ Search for recent news, trends, or developments related to '{base_topic}' to fin
             results.append(current)
 
         return results
+
+    def _check_search_results_empty(self, all_results: list) -> bool:
+        """Check if any web_search calls returned empty results."""
+        for result in all_results:
+            if result.tool_name == "web_search":
+                output = result.output
+                if output is None or (isinstance(output, list) and len(output) == 0):
+                    return True
+        return False
 
     def _fallback_topic(self) -> tuple[str, str]:
         """Return a curated fallback topic when tool-use fails."""

@@ -123,6 +123,24 @@ class ResearchAgent(BaseAgent):
         quality = score_research(raw_payload)
         self.log(str(quality))
 
+        # Critical failure check: no sources found at all
+        has_wikipedia = wiki_data and wiki_data.get("found", False)
+        has_news = len(news_data) > 0
+        has_web_results = any(
+            r.tool_name == "web_search" and r.output and isinstance(r.output, list) and len(r.output) > 0
+            for r in all_results
+        )
+        
+        if not has_wikipedia and not has_news and not has_web_results:
+            self.log("CRITICAL: No sources found for topic - failing gracefully")
+            return AgentResult(
+                success=False,
+                output={"topic": topic, "reason": "no_sources_found"},
+                errors=[f"No research sources found for '{topic}'. Please try a different topic with more available information."],
+                reasoning=f"Research failed: no sources found for topic '{topic}'",
+                next_agent=None,
+            )
+
         if quality.verdict == "THIN":
             self.log(
                 "Quality verdict THIN — running targeted second research pass..."
@@ -142,6 +160,17 @@ class ResearchAgent(BaseAgent):
                            "tool_calls_count": len(all_calls), "source": "web_search"}
             quality = score_research(raw_payload)
             self.log(f"After second pass: {quality}")
+            
+            # After second pass, if still critically low, fail gracefully
+            if quality.score < 3.0:
+                self.log(f"CRITICAL: Quality still too low after second pass (score={quality.score})")
+                return AgentResult(
+                    success=False,
+                    output={"topic": topic, "reason": "insufficient_research_quality"},
+                    errors=[f"Insufficient research data for '{topic}'. Please try a different topic."],
+                    reasoning=f"Research quality too low: score={quality.score} after second pass",
+                    next_agent=None,
+                )
 
         # ── Log summary ───────────────────────────────────────────────────────
         self.log(
